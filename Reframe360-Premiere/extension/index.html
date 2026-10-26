@@ -23,7 +23,7 @@
       <canvas id="ovl"></canvas>
       <div class="hud tl" id="hudLens"></div>
       <div class="hud tr" id="hudFmt"></div>
-      <div class="hud bl">Glisser : orienter · Molette : zoom · Maj+glisser : roulis · Alt+molette : distorsion · Double-clic : niveau</div>
+      <div class="hud bl">Glisser : orienter · Molette : zoom · Maj+glisser : roulis · Ctrl+molette : courbure · Double-clic : niveau</div>
       <div class="flag" id="flagDirty">Cadrage modifié — <b>K</b> pour poser une clé</div>
       <div class="loading" id="loading"><span></span></div>
     </div>
@@ -154,9 +154,14 @@
           <dt>R</dt><dd>Réinitialiser la caméra</dd>
           <dt>I / O</dt><dd>Entrée / sortie (fichier ouvert)</dd>
           <dt>G / H</dt><dd>Grille / horizon</dd>
+          <dt>Ctrl + molette</dt><dd>Courbure de l'objectif</dd>
         </dl>
       </div>
-      <div class="card about">Reframe 360 Pro 1.0 — moteur GPU 10 bits, Lanczos-3, super-échantillonnage adaptatif. Compatible DJI Osmo 360, Insta360, GoPro MAX, Ricoh Theta et tout fichier équirectangulaire 2:1.</div>
+      <div class="card">
+        <div class="card-h">Diagnostic <button class="link" id="btnDiag">Copier</button></div>
+        <pre class="diag" id="diag">…</pre>
+      </div>
+      <div class="card about">Reframe 360 Pro 1.1 — moteur GPU 10 bits, Lanczos-3, super-échantillonnage adaptatif. Compatible DJI Osmo 360, Insta360, GoPro MAX, Ricoh Theta et tout fichier équirectangulaire 2:1.</div>
     </div>
   </aside>
 </div>

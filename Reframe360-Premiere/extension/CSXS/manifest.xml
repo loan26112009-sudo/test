@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.reframe360.pro" ExtensionBundleVersion="1.0.0" ExtensionBundleName="Reframe 360 Pro" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.reframe360.pro" ExtensionBundleVersion="1.1.0" ExtensionBundleName="Reframe 360 Pro" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.reframe360.pro.panel" Version="1.0.0" />
+    <Extension Id="com.reframe360.pro.panel" Version="1.1.0" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
-      <Host Name="PPRO" Version="[14.0,99.9]" />
+      <Host Name="PPRO" Version="[22.0,99.9]" />
     </HostList>
     <LocaleList>
       <Locale Code="All" />
     </LocaleList>
     <RequiredRuntimeList>
-      <RequiredRuntime Name="CSXS" Version="9.0" />
+      <RequiredRuntime Name="CSXS" Version="11.0" />
     </RequiredRuntimeList>
   </ExecutionEnvironment>
   <DispatchInfoList>

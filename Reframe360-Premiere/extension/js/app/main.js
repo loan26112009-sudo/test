@@ -5,8 +5,9 @@
   'use strict';
 
   var M = R360.math, KF = R360.keyframes, host = R360.host, ff = R360.ffmpeg || null;
-  var req = host.hasNode ? root.require : null;
+  var req = host.hasNode ? host.require : null;
   var fs = req ? req('fs') : null, path = req ? req('path') : null, os = req ? req('os') : null;
+  var proc = host.process;
   var DEG = M.DEG;
 
   function $(id) { return document.getElementById(id); }
@@ -14,10 +15,6 @@
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function even(v) { v = Math.round(+v || 0); return Math.max(64, v - (v % 2)); }
   function fnv(s) { var h = 0x811c9dc5; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return ('0000000' + h.toString(16)).slice(-8); }
-  function fileUrl(p) {
-    p = p.replace(/\\/g, '/');
-    return (p.charAt(0) === '/' ? 'file://' : 'file:///') + encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F');
-  }
 
   // ---------------------------------------------------------------- settings
 
@@ -224,13 +221,33 @@
     for (var j = 0; j < lenses.length; j++) lenses[j].classList.toggle('on', lenses[j].getAttribute('data-id') === id);
   }
 
+  /*
+   * What kind of file was loaded. DJI Osmo 360 cards hold .OSV (raw, two unstitched fisheye
+   * lenses) and .LRF (low-resolution preview copies); Insta360 cards hold .INSV.
+   * Neither raw nor preview files must reach the render: they need a 360 export first.
+   */
+  function sourceKind(info) {
+    var ext = ((info.path || '').match(/\.([^.\\\/]+)$/) || ['', ''])[1].toLowerCase();
+    if (ext === 'lrf') {
+      return info.isEquirect
+        ? { kind: 'proxy', block: false, msg: 'fichier .LRF = aperçu basse résolution de la caméra : pour la qualité, utilise l\'export 360 pleine résolution de DJI Studio' }
+        : { kind: 'proxy', block: true, msg: 'fichier .LRF = aperçu basse résolution non assemblé : exporte l\'.OSV en vidéo 360 depuis DJI Studio, puis utilise ce fichier' };
+    }
+    if ((ext === 'osv' || ext === 'insv') && !info.isEquirect) {
+      return { kind: 'raw', block: true, msg: 'fichier brut .' + ext.toUpperCase() + ' (deux objectifs non assemblés) : exporte-le en vidéo 360 depuis ' + (ext === 'osv' ? 'DJI Studio' : 'Insta360 Studio') + ', puis utilise ce fichier' };
+    }
+    if (!info.isEquirect) return { kind: 'other', block: false, msg: 'pas un équirectangulaire 2:1 (exporte d\'abord en 360 depuis DJI Studio / Insta360 Studio)' };
+    return { kind: 'equirect', block: false, msg: '' };
+  }
+
   function updateSrcInfo() {
     var n = document.querySelector('.src-name'), m = document.querySelector('.src-meta');
     if (!S.media) { n.textContent = 'Mode démo'; return; }
     var i = S.media;
     n.textContent = (S.clip ? S.clip.name + '  ·  ' : '') + i.name;
     var warn = [];
-    if (!i.isEquirect) warn.push('pas un équirectangulaire 2:1 (exporte d\'abord en 360 depuis DJI Studio / Insta360 Studio)');
+    var kind = sourceKind(i);
+    if (kind.msg) warn.push(kind.msg);
     if (S.clip && Math.abs(S.clip.speed - 1) > 1e-3) warn.push('vitesse du clip ' + Math.round(S.clip.speed * 100) + ' % : rendu à 100 %, réapplique la vitesse ensuite');
     m.innerHTML = '';
     m.appendChild(document.createTextNode(i.width + '×' + i.height + ' · ' + (Math.round(i.fps * 1000) / 1000) + ' im/s · ' + i.codec.toUpperCase() + ' ' + i.bits + ' bits · ' + i.color.transfer + (S.clip ? ' · plage ' + fmtTC(S.range.out - S.range.in) : '')));
@@ -334,10 +351,13 @@
     if (!cacheIndexReady(t)) return false;
     var file = S.cache.frameFile(t);
     if (file === img.cacheFile) return true;
+    var data;
+    try { data = fs.readFileSync(file); } catch (e) { return false; }
     img.cacheFile = file;
-    var im = new Image();
-    im.onload = function () { if (img.cacheFile === file && (S.playing || img.hqT !== S.time)) setPreview(im); };
-    im.src = fileUrl(file);
+    root.createImageBitmap(new Blob([data], { type: 'image/jpeg' })).then(function (bmp) {
+      if (img.cacheFile === file && (S.playing || img.hqT !== S.time)) setPreview(bmp);
+      if (bmp.close) bmp.close();
+    }).catch(function () { if (img.cacheFile === file) img.cacheFile = null; });
     return true;
   }
 
@@ -512,7 +532,7 @@
   viewer.addEventListener('dblclick', function () { tweenCam({ roll: 0 }, 250); });
   viewer.addEventListener('wheel', function (e) {
     e.preventDefault();
-    if (e.altKey) editCam({ dist: S.cam.dist - e.deltaY * 0.0012 });
+    if (e.altKey || e.ctrlKey) editCam({ dist: S.cam.dist - e.deltaY * 0.0012 });
     else editCam({ fov: S.cam.fov * Math.exp(e.deltaY * 0.0011) });
   }, { passive: false });
 
@@ -672,7 +692,7 @@
 
   function appDataDir() {
     if (!fs) return null;
-    var base = process.env.APPDATA || path.join(os.homedir(), '.config');
+    var base = proc.env.APPDATA || path.join(os.homedir(), '.config');
     return path.join(base, 'Reframe360Pro');
   }
   function sessionKey() { return S.media ? S.media.path.toLowerCase() + (S.clip ? '|' + S.clip.nodeId : '') : 'demo'; }
@@ -683,7 +703,7 @@
   function saveSession() {
     var data = JSON.stringify({ v: 1, key: sessionKey(), keys: S.track.toJSON(), baseCam: S.baseCam, corr: S.corr, savedAt: new Date().toISOString() });
     try {
-      if (fs && S.media) { fs.mkdirSync(path.dirname(sessionFile()), { recursive: true }); fs.writeFileSync(sessionFile(), data); }
+      if (fs && S.media) { ff.mkdirp(path.dirname(sessionFile())); fs.writeFileSync(sessionFile(), data); }
       else localStorage.setItem('r360.session.' + sessionKey(), data);
     } catch (e) { status('Sauvegarde impossible : ' + e.message, 'err'); }
   }
@@ -755,14 +775,17 @@
       S.dirty = false;
       img.hqT = null; img.cacheFile = null;
       updateSrcInfo(); updateFormatUI();
-      if (R.maxTextureSize() < info.width) status('⚠ Ton GPU limite les textures à ' + R.maxTextureSize() + ' px (source ' + info.width + ' px). Mets à jour le pilote graphique.', 'err');
+      var kind = sourceKind(info);
+      if (kind.block) status('⚠ ' + kind.msg.charAt(0).toUpperCase() + kind.msg.slice(1) + '.', 'err');
+      else if (R.maxTextureSize() < info.width) status('⚠ Ton GPU limite les textures à ' + R.maxTextureSize() + ' px (source ' + info.width + ' px). Mets à jour le pilote graphique.', 'err');
       else status((had ? 'Session restaurée (' + S.track.keys.length + ' clés). ' : '') + info.name + ' chargé.', 'ok');
       startCache();
       var t = S.range.in;
       if (clip && clip.seq && clip.seq.player >= clip.start && clip.seq.player <= clip.end) t = clip.inPoint + (clip.seq.player - clip.start);
       setTime(t, { fromPremiere: true });
     }).catch(function (e) {
-      status('Impossible de lire ce fichier : ' + e.message, 'err');
+      if (/\.(osv|lrf|insv)$/i.test(file)) status('Fichier brut de caméra (' + file.split('.').pop().toUpperCase() + ') : exporte-le d\'abord en vidéo 360 depuis DJI Studio / Insta360 Studio (tutoriel, partie 7).', 'err');
+      else status('Impossible de lire ce fichier : ' + e.message, 'err');
     }).then(function () { $('loading').classList.remove('on'); });
   }
 
@@ -777,16 +800,17 @@
   // ---------------------------------------------------------------- Premiere sync
 
   var sync = { last: null, timer: null };
+  function seqId() { return S.clip && S.clip.seq ? S.clip.seq.id || '' : ''; }
   function pushPremiere(t) {
     if (!S.clip || !S.set.sync || !host.inPremiere || S.playing) return;
     var seqT = S.clip.start + (t - S.clip.inPoint);
     sync.last = seqT;
     if (sync.timer) return;
-    sync.timer = setTimeout(function () { sync.timer = null; host.call('r360_setPlayer', sync.last).catch(function () {}); }, 90);
+    sync.timer = setTimeout(function () { sync.timer = null; host.call('r360_setPlayer', sync.last, seqId()).catch(function () {}); }, 90);
   }
   setInterval(function () {
     if (!S.clip || !S.set.sync || !host.inPremiere || S.playing || S.dragging || S.exporting || sync.timer) return;
-    host.call('r360_getPlayer').then(function (r) {
+    host.call('r360_getPlayer', seqId()).then(function (r) {
       if (!r.ok || !S.clip) return;
       var seqT = r.seconds;
       if (sync.last !== null && Math.abs(seqT - sync.last) < tolerance()) return;
@@ -805,32 +829,59 @@
     return '';
   }
 
+  // The clip may have been trimmed or moved in Premiere since it was loaded: re-read it.
+  function refreshClip() {
+    if (!S.clip || !host.inPremiere) return Promise.resolve();
+    return host.call('r360_getClip', S.clip.nodeId, seqId()).then(function (r) {
+      if (!r.ok) { S.clip.lost = r.error; return; }
+      var changed = Math.abs(r.inPoint - S.clip.inPoint) > 1e-4 || Math.abs(r.outPoint - S.clip.outPoint) > 1e-4;
+      S.clip = r; S.seq = r.seq;
+      if (changed) {
+        S.range = { in: r.inPoint, out: r.outPoint };
+        updateSrcInfo(); updateEstimate(); startCache(); setTime(S.time, { fromPremiere: true });
+      }
+    }).catch(function () {});
+  }
+
   function runExport() {
     if (S.exporting) return;
     if (!S.media || !S.tools || !ff) { status('Charge d\'abord un clip 360 (bouton « Clip sélectionné » ou « Ouvrir… »).', 'err'); return; }
     if (S.playing) stopPlay();
+    var kind = sourceKind(S.media);
+    if (kind.block) { status('Rendu impossible : ' + kind.msg + '. (Voir le tutoriel, partie 7.)', 'err'); return; }
+    S.exporting = { cancelled: false };
+    $('btnRender').disabled = true;
+    refreshClip().then(startExport).catch(function (e) {
+      status('Échec du rendu : ' + e.message, 'err');
+      S.exporting = null; $('btnRender').disabled = false;
+    });
+  }
+
+  function startExport() {
+    var job = S.exporting;
+    function abort(msg) { status(msg, 'err'); S.exporting = null; $('btnRender').disabled = false; }
     var media = S.media, o = outSize(), rate = media.rate;
     var t0 = S.range.in, count = Math.max(1, Math.round((S.range.out - S.range.in) * media.fps));
-    if (R.maxTextureSize() < media.width) { status('GPU incompatible avec une source de ' + media.width + ' px.', 'err'); return; }
+    if (R.maxTextureSize() < media.width) return abort('GPU incompatible avec une source de ' + media.width + ' px (mets à jour le pilote graphique).');
     var dir = outputDir();
-    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { status('Dossier de sortie inaccessible : ' + e.message, 'err'); return; }
+    try { ff.mkdirp(dir); fs.accessSync(dir, fs.constants.W_OK); } catch (e) { return abort('Dossier de sortie inaccessible (' + dir + ') : choisis-en un autre dans Export › Dossier.'); }
     var stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    var base = path.basename(media.path).replace(/\.[^.]+$/, '').replace(/[^\w\-]+/g, '_');
+    var base = path.basename(media.path).replace(/\.[^.]+$/, '').replace(/[<>:"\/\\|?*\x00-\x1f]+/g, '').replace(/\s+/g, '_') || 'clip';
     var out = path.join(dir, base + '_R360_' + o[0] + 'x' + o[1] + '_' + stamp + (ff.CODECS[S.set.codec] || ff.CODECS.prores_hq).ext);
 
     // Snapshot of the animation: edits made during the render do not affect it.
     var track = new KF.KeyframeTrack(S.track.toJSON()), base0 = clone(S.baseCam), corr = clone(S.corr);
     var camFn = function (t) { return track.keys.length ? track.evaluate(t) : clone(base0); };
     var clip = S.clip ? clone(S.clip) : null, set = clone(S.set);
-    if (S.dirty) status('⚠ La modification non posée en clé est ignorée par le rendu.', 'err');
+    var warn = S.dirty ? '⚠ cadrage non posé en clé ignoré · ' : '';
+    if (clip && clip.lost) warn += '⚠ ' + clip.lost + ' · ';
 
-    var exportR = S.exportRenderer || (S.exportRenderer = new R360.Reframer(document.createElement('canvas')));
-    var job = { cancelled: false };
-    S.exporting = job;
-    $('btnRender').disabled = true;
+    var exportR;
+    try { exportR = S.exportRenderer || (S.exportRenderer = new R360.Reframer(document.createElement('canvas'))); }
+    catch (e) { return abort(e.message); }
     $('progress').classList.add('on');
     $('progBar').style.width = '0%';
-    $('progTxt').textContent = 'Démarrage…';
+    $('progTxt').textContent = warn + 'Démarrage…';
 
     function attempt(hw) {
       var decoder = ff.openDecoder(S.tools, media, t0, count, hw);
@@ -849,10 +900,13 @@
           job.progressed = true;
           var eta = (total - n) / Math.max(0.01, fps);
           $('progBar').style.width = (n / total * 100).toFixed(1) + '%';
-          $('progTxt').textContent = n + ' / ' + total + ' · ' + fps.toFixed(1) + ' im/s · reste ' + (eta > 90 ? Math.round(eta / 60) + ' min' : Math.round(eta) + ' s');
+          $('progTxt').textContent = warn + n + ' / ' + total + ' · ' + fps.toFixed(1) + ' im/s · reste ' + (eta > 90 ? Math.round(eta / 60) + ' min' : Math.round(eta) + ' s');
         }
       }).catch(function (e) {
-        if (hw && !job.progressed && !job.cancelled && /Décodage/.test(e.message)) return attempt(false); // GPU decoder refused this file
+        // GPU decoder refused this file: retry in software once the killed processes released the output file
+        if (hw && !job.progressed && !job.cancelled && /Décodage/.test(e.message)) {
+          return new Promise(function (r) { setTimeout(r, 600); }).then(function () { return attempt(false); });
+        }
         throw e;
       });
     }
@@ -863,14 +917,15 @@
       $('progTxt').textContent = res.frames + ' images en ' + Math.round(res.seconds) + ' s (' + (res.frames / res.seconds).toFixed(1) + ' im/s)';
       if (set.after === 'none' || !host.inPremiere) { status('✔ Rendu terminé : ' + out, 'ok'); return; }
       return host.call('r360_importAndPlace', {
-        path: out, place: set.after === 'place' && !!clip, trackIndex: clip ? clip.trackIndex : -1,
-        start: clip ? clip.start : 0, nodeId: clip ? clip.nodeId : '', disableOriginal: set.disableOrig
+        path: out, place: set.after === 'place' && !!clip && !clip.lost, trackIndex: clip ? clip.trackIndex : -1,
+        start: clip ? clip.start : 0, duration: count / media.fps, nodeId: clip ? clip.nodeId : '',
+        seqId: clip && clip.seq ? clip.seq.id || '' : '', disableOriginal: set.disableOrig
       }).then(function (r) {
         if (!r.ok) status('Rendu OK mais import impossible : ' + r.error, 'err');
         else status('✔ ' + (r.placed ? 'Plan recadré placé au-dessus du clip d\'origine. ' : 'Importé dans le chutier « Reframe 360 ». ') + (r.note || ''), 'ok');
       });
     }).catch(function (e) {
-      try { fs.unlinkSync(out); } catch (e2) {}
+      try { fs.unlinkSync(out); } catch (e2) { setTimeout(function () { try { fs.unlinkSync(out); } catch (e3) {} }, 1500); }
       if (e.message === 'CANCELLED') { status('Rendu annulé.'); $('progTxt').textContent = 'Annulé'; }
       else { status('Échec du rendu : ' + e.message.split('\n').slice(-2).join(' '), 'err'); $('progTxt').textContent = 'Erreur'; }
     }).then(function () {
@@ -905,16 +960,16 @@
   });
   $('btnOpenDir').addEventListener('click', function () {
     var d = outputDir();
-    if (d && fs) { try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} host.openFolder(d); }
+    if (d && fs) { try { ff.mkdirp(d); } catch (e) {} host.openFolder(d); }
   });
   $('btnFF').addEventListener('click', function () {
-    var f = host.openFileDialog('Choisir ffmpeg.exe');
+    var f = host.openFileDialog('Choisir ffmpeg.exe', proc && proc.platform === 'win32' ? ['exe'] : []);
     if (f && ff) { S.set.ffmpeg = f; saveSettings(); locateTools(); }
   });
   $('btnClearCache').addEventListener('click', function () {
     if (!fs) return;
     if (S.cache) { S.cache.cancel(); S.cache = null; }
-    try { (fs.rmSync || fs.rmdirSync)(ff.cacheRoot(), { recursive: true, force: true }); } catch (e) {}
+    ff.rmrf(ff.cacheRoot());
     status('Cache vidé.');
     if (S.media) startCache();
   });
@@ -927,9 +982,24 @@
     updateSrcInfo(); updateEstimate(); startCache(); setTime(S.time);
   }
 
+  // Give keyboard focus back to the panel after using a control, so shortcuts keep working
+  // (and Space does not re-trigger the last clicked button).
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest && e.target.closest('button');
+    if (b) b.blur();
+  });
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'SELECT' || t.type === 'range' || t.type === 'checkbox')) t.blur();
+  });
+  document.addEventListener('pointerup', function (e) { if (e.target && e.target.type === 'range') e.target.blur(); });
+
   document.addEventListener('keydown', function (e) {
-    var tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    var t = e.target || {}, tag = t.tagName || '', type = (t.type || '').toLowerCase();
+    if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && (type === 'number' || type === 'text'))) {
+      if (e.key === 'Enter' || e.key === 'Escape') t.blur();
+      return;
+    }
     var k = e.key, used = true;
     if (k === ' ') togglePlay();
     else if (k === 'ArrowLeft') { if (e.shiftKey) jumpKey(-1); else stepFrame(-1); }
@@ -948,6 +1018,30 @@
     if (used) e.preventDefault();
   });
 
+  // ---------------------------------------------------------------- diagnostic (Settings tab)
+
+  function diagnostic() {
+    var lines = [
+      'Reframe 360 Pro 1.1.0',
+      'Panneau : ' + (host.inPremiere ? 'Premiere Pro (CEP)' : 'navigateur (démo)') + ' · ' + ((navigator.userAgent.match(/Chrome\/[\d.]+/) || ['?'])[0]),
+      'Node.js : ' + (proc ? proc.versions.node + ' · ' + proc.platform + ' ' + proc.arch : 'non disponible'),
+      'GPU : ' + R.gpuInfo(),
+      'Texture max : ' + R.maxTextureSize() + ' px',
+      'FFmpeg : ' + (S.tools ? S.tools.ffmpeg : 'introuvable'),
+      'Extension : ' + host.extensionDir()
+    ];
+    var el = $('diag');
+    el.textContent = lines.join('\n');
+    if (host.inPremiere) host.call('r360_ping').then(function (r) { if (r.ok) el.textContent += '\nPremiere Pro : ' + r.version; }).catch(function () {});
+    if (ff && S.tools) ff.version(S.tools).then(function (v) { el.textContent += '\n' + v; }).catch(function (e) { el.textContent += '\nFFmpeg ne démarre pas : ' + e.message; });
+  }
+  $('btnDiag').addEventListener('click', function () {
+    var ta = document.createElement('textarea');
+    ta.value = $('diag').textContent; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); status('Diagnostic copié dans le presse-papiers.', 'ok'); } catch (e) {}
+    document.body.removeChild(ta);
+  });
+
   // ---------------------------------------------------------------- init
 
   function locateTools() {
@@ -957,11 +1051,14 @@
     }
     S.tools = ff.locate(host.extensionDir(), S.set.ffmpeg);
     $('ffPath').textContent = S.tools ? S.tools.ffmpeg : 'Introuvable — lance Install-Windows.bat';
+    if ($('diag').textContent !== '…') diagnostic();
     if (!S.tools) status('FFmpeg introuvable — relance Install-Windows.bat ou choisis ffmpeg.exe dans Réglages.', 'err');
   }
 
   buildSide();
   locateTools();
+  if (ff) setTimeout(function () { ff.pruneCache(7); }, 5000);
+  diagnostic();
   setPreview(R360.demo.makeDemoEquirect(4096));
   S.cam = clone(S.baseCam);
   updateCamUI(); updateEstimate();
@@ -978,5 +1075,5 @@
   }
 
   // exposed for automated UI tests
-  root.R360.app = { S: S, setTime: setTime, editCam: editCam, addKey: addKey, applyPreset: applyPreset, draw: draw, resize: resize };
+  root.R360.app = { sourceKind: sourceKind, S: S, setTime: setTime, editCam: editCam, addKey: addKey, applyPreset: applyPreset, draw: draw, resize: resize };
 })(window);

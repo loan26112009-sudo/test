@@ -58,15 +58,15 @@
         i++;
         if (job.onProgress) job.onProgress(i, job.count, i / Math.max(0.001, (Date.now() - startTime) / 1000));
       }
+      if (!i) throw new Error('Décodage : aucune image lue sur cette plage.');
       await Promise.all(pending);
       job.decoder.kill();
       await job.encoder.finish();
     } catch (e) {
       job.decoder.kill();
-      job.encoder.kill();
+      await job.encoder.kill();
       throw e;
     }
-    if (!i) throw new Error('Aucune image décodée sur cette plage.');
     return { frames: i, seconds: (Date.now() - startTime) / 1000 };
   }
 

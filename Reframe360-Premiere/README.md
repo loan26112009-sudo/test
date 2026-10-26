@@ -40,7 +40,9 @@ Le moteur a été testé image par image contre une implémentation de référen
    - télécharge FFmpeg (décodage H.265 10 bits / 8K et encodage ProRes).
 4. Ouvre Premiere Pro → **Fenêtre › Extensions › Reframe 360 Pro**.
 
-Configuration requise : Premiere Pro 2020 (14.0) ou plus récent, une carte graphique compatible WebGL 2 (toute carte NVIDIA, AMD ou Intel récente, pilote à jour).
+Configuration requise : **Premiere Pro 2022 ou plus récent**, Windows 10/11 64 bits, une carte graphique NVIDIA, AMD ou Intel avec un pilote à jour.
+
+👉 **Tutoriel d'installation pas à pas, avec le dépannage : [TUTORIEL-INSTALLATION.md](TUTORIEL-INSTALLATION.md)**
 
 Sur Mac : `install/install-mac.sh` (et `brew install ffmpeg`).
 
@@ -48,10 +50,10 @@ Sur Mac : `install/install-mac.sh` (et `brew install ffmpeg`).
 
 ## Comment l'utiliser
 
-1. **Exporte ta vidéo en 360° équirectangulaire** depuis DJI Studio (Osmo 360) ou Insta360 Studio, avec la stabilisation et le verrouillage d'horizon activés. C'est là que se fait le raccord des deux objectifs. Les fichiers bruts `.OSV` / `.INSV` à double fisheye ne sont pas recadrables tels quels.
+1. **Exporte tes `.OSV` en vidéo 360 depuis DJI Studio** (ou tes `.insv` depuis Insta360 Studio), avec la stabilisation et l'horizon verrouillé. Les `.OSV` contiennent les deux objectifs non assemblés et les `.LRF` ne sont que des aperçus basse résolution : le panneau détecte les deux et explique quoi faire (voir le [tutoriel, partie 7](TUTORIEL-INSTALLATION.md#7-préparer-tes-vidéos-360-dji--insta360)).
 2. Mets le fichier 360 dans ta séquence Premiere, sélectionne le clip et clique **« Clip sélectionné »**.
 3. Cadre :
-   - **glisser** dans l'image pour orienter, **molette** pour zoomer, **Maj+glisser** pour le roulis, **Alt+molette** pour la courbure ;
+   - **glisser** dans l'image pour orienter, **molette** pour zoomer, **Maj+glisser** pour le roulis, **Ctrl+molette** pour la courbure ;
    - touches **1 à 9** pour les objectifs, clic sur la **mini-carte 360** pour viser un point.
 4. **K** pose une image clé. Déplace la tête de lecture, recadre, puis **K** à nouveau. Les clés se déplacent à la souris sur la timeline du panneau, et le menu déroulant choisit la transition.
 5. Onglet **Export** : choisis le format (par défaut celui de la séquence) puis clique **RENDU**. Le plan recadré est placé au-dessus de ton clip 360, à la même position dans la séquence.
@@ -72,6 +74,7 @@ Sur Mac : `install/install-mac.sh` (et `brew install ffmpeg`).
 - **« FFmpeg introuvable »** : onglet Réglages → *Choisir…* → sélectionne `ffmpeg.exe`.
 - **Erreur de décodage** : décoche *Décodage GPU* dans Réglages.
 - **Aperçu noir** : mets à jour le pilote de la carte graphique.
+- Onglet **Réglages › Diagnostic › Copier** : versions de Premiere, Node, FFmpeg et carte graphique, à joindre à toute demande d'aide.
 - Débogage : avec le panneau ouvert, va sur `http://localhost:8099` dans Chrome.
 
 ---
@@ -94,3 +97,4 @@ tests/                     tests (Node + Playwright + FFmpeg + numpy)
 Modèle d'objectif : la caméra virtuelle est placée en `(0,0,-d)` par rapport à la sphère unité. `d = 0` donne une projection rectilinéaire, `d = 1` une projection stéréographique (Tiny Planet), et `d > 1` place la caméra hors de la sphère (Crystal Ball). Toutes les valeurs intermédiaires s'animent.
 
 Tests : `npm test` (il faut Node 18+, FFmpeg, Python 3 + numpy et Playwright/Chromium).
+Simulation complète de Premiere (le vrai panneau tourne dans Electron, qui fonctionne comme CEP, et le vrai `premiere.jsx` est exécuté sur une fausse timeline) : `ELECTRON=/chemin/electron xvfb-run node tests/cep-sim/run.js`.

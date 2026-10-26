@@ -27,6 +27,11 @@ const out = process.argv[2] || require('fs').mkdtempSync(path.join(require('os')
     A.setTime(4.5); const mid2 = Object.assign({}, S.cam);
     return { keys: S.track.keys.length, mid, mid2 };
   });
+  const kinds = await page.evaluate(() => ['C:/DCIM/DJI_0001.OSV|0', 'C:/DCIM/DJI_0001.LRF|0', 'C:/DCIM/DJI_0001.LRF|1', 'C:/x/export_360.mp4|1', 'C:/x/flat.mp4|0']
+    .map(s => { const [p, e] = s.split('|'); const k = R360.app.sourceKind({ path: p, isEquirect: e === '1' }); return k.kind + ':' + k.block; }));
+  const want = ['raw:true', 'proxy:true', 'proxy:false', 'equirect:false', 'other:false'];
+  if (JSON.stringify(kinds) !== JSON.stringify(want)) errors.push('sourceKind ' + kinds.join());
+  else console.log('OSV/LRF detection OK:', kinds.join(' '));
   console.log('keys', r.keys, 'cam@1.5s', JSON.stringify(r.mid), 'cam@4.5s', JSON.stringify(r.mid2));
   await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(out, '01-keyframes.png') });

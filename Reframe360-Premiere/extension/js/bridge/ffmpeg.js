@@ -17,8 +17,8 @@
   var SWS = 'spline+accurate_rnd+full_chroma_int+full_chroma_inp';
 
   var CODECS = {
-    prores_hq:   { name: 'Apple ProRes 422 HQ — 10 bits (recommandé)', ext: '.mov', args: ['-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0', '-bits_per_mb', '8000'], pix: 'yuv422p10le' },
-    prores_4444: { name: 'Apple ProRes 4444 — 10 bits 4:4:4',           ext: '.mov', args: ['-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0', '-bits_per_mb', '8000'], pix: 'yuv444p10le' },
+    prores_hq:   { name: 'Apple ProRes 422 HQ — 10 bits (recommandé)', ext: '.mov', args: ['-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0'], pix: 'yuv422p10le' },
+    prores_4444: { name: 'Apple ProRes 4444 — 10 bits 4:4:4',           ext: '.mov', args: ['-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0'], pix: 'yuv444p10le' },
     dnxhr_hqx:   { name: 'Avid DNxHR HQX — 10 bits',                    ext: '.mov', args: ['-c:v', 'dnxhd', '-profile:v', 'dnxhr_hqx'], pix: 'yuv422p10le' },
     hevc_10:     { name: 'H.265 10 bits — qualité max (fichier léger)', ext: '.mp4', args: ['-c:v', 'libx265', '-preset', 'slow', '-crf', '12', '-tag:v', 'hvc1', '-x265-params', 'aq-mode=3:no-sao=1:log-level=error'], pix: 'yuv420p10le' },
     h264_hq:     { name: 'H.264 8 bits — haute qualité (compatibilité)', ext: '.mp4', args: ['-c:v', 'libx264', '-preset', 'slow', '-crf', '12', '-profile:v', 'high'], pix: 'yuv420p' }
@@ -110,7 +110,8 @@
       });
       if (!v) throw new Error('Aucune piste vidéo dans ce fichier.');
       var rate = parseRate(v.avg_frame_rate) || parseRate(v.r_frame_rate) || { num: 30, den: 1, fps: 30, str: '30/1' };
-      var dur = +v.duration || +(j.format && j.format.duration) || 0;
+      var dur = +v.duration || +(j.format && j.format.duration) || (+v.nb_frames ? +v.nb_frames / rate.fps : 0);
+      if (!(dur > 0)) throw new Error('Durée de la vidéo illisible (fichier incomplet ou en cours de copie ?).');
       var bits = +v.bits_per_raw_sample || (/10|12/.test(v.pix_fmt || '') ? 10 : 8);
       var w = +v.width, h = +v.height;
       var rotate = 0;
@@ -158,35 +159,72 @@
     };
   }
 
-  // Background JPEG cache for smooth scrubbing / playback in the panel.
+  /*
+   * Background JPEG cache for smooth scrubbing / playback in the panel.
+   * Frames go through RGB first so the JPEG carries the same colours as the HQ preview
+   * (JPEG decoders assume BT.601 full range; FFmpeg converts RGB -> yuvj420p accordingly).
+   */
   function buildCache(tools, info, opts) {
     var dir = opts.dir, fps = opts.fps || 10, width = Math.min(opts.width || 2048, info.width);
-    fs.mkdirSync(dir, { recursive: true });
+    mkdirp(dir);
     var t0 = Math.max(0, opts.start || 0), dur = opts.duration || info.duration;
-    var args = ['-v', 'error', '-progress', 'pipe:1', '-nostats'];
-    if (opts.hw) args.push('-hwaccel', 'auto');
-    args.push('-ss', t0.toFixed(6), '-t', dur.toFixed(6), '-i', info.path, '-map', '0:v:0',
-      '-vf', decodeFilter(info, 'fps=' + fps + ',scale=' + width + ':-2:flags=area'),
-      '-q:v', '3', '-start_number', '0', path.join(dir, 'f_%06d.jpg'));
     var idx = cacheIndex(dir, t0, fps, dur), total = idx.total;
-    var p = spawn(tools.ffmpeg, args), err = collectStderr(p);
-    var cancelled = false;
-    p.stdout.on('data', function (d) {
-      var m = /frame=(\d+)/g, s = d.toString(), r, last = null;
-      while ((r = m.exec(s))) last = +r[1];
-      if (last !== null && opts.onProgress) opts.onProgress(last, total);
-    });
-    var done = new Promise(function (resolve, reject) {
-      p.on('error', reject);
-      p.on('close', function (code) {
-        if (cancelled) return resolve(false);
-        if (code === 0) { if (opts.onProgress) opts.onProgress(total, total); resolve(true); }
-        else reject(new Error(err() || ('ffmpeg code ' + code)));
+    var cancelled = false, proc = null;
+
+    function attempt(useHw) {
+      var args = ['-v', 'error', '-progress', 'pipe:1', '-nostats', '-y'];
+      if (useHw) args.push('-hwaccel', 'auto');
+      args.push('-ss', t0.toFixed(6), '-t', dur.toFixed(6), '-i', info.path, '-map', '0:v:0',
+        '-vf', decodeFilter(info, 'fps=' + fps + ',scale=' + width + ':-2:flags=area') + ',format=rgb24',
+        '-q:v', '3', '-start_number', '0', path.join(dir, 'f_%06d.jpg'));
+      var p = proc = spawn(tools.ffmpeg, args), err = collectStderr(p);
+      p.stdout.on('data', function (d) {
+        var m = /frame=(\d+)/g, s = d.toString(), r, last = null;
+        while ((r = m.exec(s))) last = +r[1];
+        if (last !== null && opts.onProgress) opts.onProgress(last, total);
       });
-    });
-    idx.done = done;
-    idx.cancel = function () { cancelled = true; try { p.kill(); } catch (e) {} };
+      return new Promise(function (resolve, reject) {
+        p.on('error', reject);
+        p.on('close', function (code) {
+          if (cancelled) return resolve(false);
+          if (code === 0) { if (opts.onProgress) opts.onProgress(total, total); return resolve(true); }
+          if (useHw) return resolve(attempt(false)); // GPU decoder refused the file: software decode
+          reject(new Error(err() || ('ffmpeg code ' + code)));
+        });
+      });
+    }
+
+    idx.done = attempt(!!opts.hw);
+    idx.cancel = function () { cancelled = true; try { if (proc) proc.kill(); } catch (e) {} };
     return idx;
+  }
+
+  function mkdirp(dir) {
+    if (fs.existsSync(dir)) return;
+    mkdirp(path.dirname(dir));
+    try { fs.mkdirSync(dir); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+
+  function rmrf(p) {
+    var st;
+    try { st = fs.lstatSync(p); } catch (e) { return; }
+    if (st.isDirectory()) {
+      fs.readdirSync(p).forEach(function (f) { rmrf(path.join(p, f)); });
+      try { fs.rmdirSync(p); } catch (e) {}
+    } else {
+      try { fs.unlinkSync(p); } catch (e) {}
+    }
+  }
+
+  // Deletes preview caches not used for `days` days (they can reach a few GB on long 8K clips).
+  function pruneCache(days) {
+    var rootDir = cacheRoot(), limit = Date.now() - days * 86400000;
+    try {
+      fs.readdirSync(rootDir).forEach(function (d) {
+        var p = path.join(rootDir, d);
+        try { if (fs.statSync(p).mtimeMs < limit) rmrf(p); } catch (e) {}
+      });
+    } catch (e) {}
   }
 
   /*
@@ -282,8 +320,8 @@
     if (c.ext === '.mp4') args.push('-movflags', '+faststart');
     args.push('-metadata', 'comment=Reframe 360 Pro', opts.out);
 
-    var p = spawn(tools.ffmpeg, args), err = collectStderr(p), closed = false, code = null, procErr = null;
-    var closeP = new Promise(function (resolve) { p.on('close', function (c2) { closed = true; code = c2; resolve(c2); }); });
+    var p = spawn(tools.ffmpeg, args), err = collectStderr(p), closed = false, procErr = null;
+    var closeP = new Promise(function (resolve) { p.on('close', function (c2) { closed = true; resolve(c2); }); });
     p.on('error', function (e) { procErr = e; });
     p.stdin.on('error', function () { /* reported through exit code */ });
     return {
@@ -299,14 +337,26 @@
         p.stdin.end();
         return closeP.then(function (c2) { if (c2 !== 0) throw new Error('Encodage: ' + (err() || 'code ' + c2)); });
       },
-      kill: function () { try { p.kill(); } catch (e) {} }
+      // resolves once the process is gone (Windows keeps the output file locked until then)
+      kill: function () { try { p.stdin.destroy(); p.kill(); } catch (e) {} return closeP; }
     };
+  }
+
+  // First line of `ffmpeg -version` + whether the encoders we rely on are present.
+  function version(tools) {
+    return run(tools.ffmpeg, ['-hide_banner', '-version']).then(function (v) {
+      return run(tools.ffmpeg, ['-hide_banner', '-encoders']).then(function (enc) {
+        var e = enc.toString(), missing = ['prores_ks', 'dnxhd', 'libx265', 'libx264'].filter(function (n) { return e.indexOf(' ' + n + ' ') < 0; });
+        return v.toString().split('\n')[0] + (missing.length ? ' (encodeurs absents : ' + missing.join(', ') + ')' : '');
+      });
+    });
   }
 
   function cacheRoot() { return path.join(os.tmpdir(), 'Reframe360Pro'); }
 
   var api = {
     CODECS: CODECS, locate: locate, probe: probe, grabFrame: grabFrame, buildCache: buildCache, cacheIndex: cacheIndex,
+    mkdirp: mkdirp, rmrf: rmrf, pruneCache: pruneCache, version: version,
     openDecoder: openDecoder, openEncoder: openEncoder, colorInfo: colorInfo, parseRate: parseRate, cacheRoot: cacheRoot
   };
   root.R360 = root.R360 || {};

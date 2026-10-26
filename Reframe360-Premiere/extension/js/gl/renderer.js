@@ -83,7 +83,8 @@
       '  if (p.y < 0) { p.y = -1 - p.y; p.x += W / 2; }',
       '  else if (p.y >= H) { p.y = 2 * H - 1 - p.y; p.x += W / 2; }',
       '  p.y = clamp(p.y, 0, H - 1);',
-      '  p.x = ((p.x % W) + W) % W;',
+      '  if (p.x < 0) p.x += W * ((-p.x) / W + 1);', // % on negative ints is undefined in GLSL ES
+      '  p.x = p.x % W;',
       '  uvec4 b = texelFetch(uSrc, p, 0);',
       '  uint w = b.r | (b.g << 8) | (b.b << 16) | (b.a << 24);',
       '  return vec3(float((w >> 20) & 1023u), float((w >> 10) & 1023u), float(w & 1023u)) * (1.0 / 1023.0);',
@@ -204,6 +205,11 @@
   };
 
   Reframer.prototype.maxTextureSize = function () { return this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE); };
+
+  Reframer.prototype.gpuInfo = function () {
+    var gl = this.gl, ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return (ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) + ' — ' + gl.getParameter(gl.VERSION);
+  };
 
   // ---------- Preview ----------
 
