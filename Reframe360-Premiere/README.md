@@ -4,6 +4,8 @@ Panneau Premiere Pro qui recadre tes vidéos 360° (DJI Osmo 360, Insta360 X3/X4
 
 Il marche sur **Windows**, alors que le plugin DJI n'existe que sur Mac.
 
+![Panneau Reframe 360 Pro](docs/panneau.png)
+
 ---
 
 ## Ce qu'il fait
@@ -17,6 +19,8 @@ Il marche sur **Windows**, alors que le plugin DJI n'existe que sur Mac.
 | **Codecs** | ProRes 422 HQ (recommandé, fluide au montage), ProRes 4444, DNxHR HQX, H.265 10 bits, H.264. |
 | **Bonus** | Flou de mouvement sur les mouvements de caméra (obturateur 90–360°), netteté optionnelle, correction d'horizon pour tout le clip, mini-carte 360 cliquable, ligne d'horizon, grille des tiers. |
 | **Premiere** | Charge le clip sélectionné et sa plage in/out, synchronise la tête de lecture dans les deux sens, puis **place automatiquement le plan recadré au-dessus du clip d'origine** (qui est désactivé). Les cadrages sont sauvegardés par clip. |
+
+![Les 9 objectifs](docs/objectifs.png)
 
 ### Ce que veut dire « sans perte »
 Le moteur a été testé image par image contre une implémentation de référence indépendante :

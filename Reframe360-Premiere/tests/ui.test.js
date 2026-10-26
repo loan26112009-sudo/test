@@ -1,8 +1,8 @@
 // Loads the panel in demo mode (no Premiere), checks for JS errors, exercises lenses/keyframes and saves screenshots.
-// Run: node tests/ui.test.js <outDir>
+// Run: node tests/ui.test.js [outDir]   (defaults to a temp folder)
 const { chromium } = require('playwright');
 const path = require('path');
-const out = process.argv[2] || '.';
+const out = process.argv[2] || require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'r360-ui-'));
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 860 } });
