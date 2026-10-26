@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Debug: open http://localhost:8099 in Chrome while the panel is open in Premiere. -->
+<ExtensionList>
+  <Extension Id="com.reframe360.pro.panel">
+    <HostList>
+      <Host Name="PPRO" Port="8099"/>
+    </HostList>
+  </Extension>
+</ExtensionList>
