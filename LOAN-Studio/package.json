@@ -1,0 +1,10 @@
+{
+  "name": "loan-studio",
+  "version": "2.0.0",
+  "private": true,
+  "description": "LOAN Studio — editing cockpit for Adobe Premiere Pro (dérush, structure & loops, jump-cuts, audio, shorts, proxies, final check) + Reframe 360",
+  "scripts": {
+    "test": "node tests/studio-core.test.js && node tests/studio-media.test.js && node tests/studio-host.test.js && node tests/keyframes.test.js && node tests/render.test.js && node tests/pipeline.test.js && node tests/ui.test.js",
+    "test:premiere": "node tests/sim/studio-run.js && node tests/sim/reframe-run.js"
+  }
+}

@@ -1,0 +1,5 @@
+@echo off
+chcp 65001 >nul
+title LOAN Studio - desinstallation
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\uninstall.ps1"
+pause

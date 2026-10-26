@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>LOAN Studio</title>
+<link rel="stylesheet" href="css/studio.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo"></span><b>LOAN</b><span>STUDIO</span></div>
+  <div class="ctx" id="ctx"><span class="ctx-seq" id="ctxSeq">Aucune séquence</span><span class="ctx-sub" id="ctxSub">Ouvre un projet Premiere</span></div>
+  <span class="chip" id="countdown" title="Prochaine échéance de ton planning"></span>
+  <button class="icon" id="btnRefresh" title="Actualiser (projet et séquence)">⟳</button>
+  <button class="icon" id="btnSettings" title="Réglages">⚙</button>
+</header>
+
+<div class="body">
+  <nav class="rail" id="rail">
+    <button data-page="home" class="on" title="Accueil : planning, ordre d'or, session, sauvegarde"><i>🏠</i><span>Accueil</span></button>
+    <button data-page="derush" title="Dérush A/B/C/⭐ ultra rapide"><i>🗂️</i><span>Dérush</span></button>
+    <button data-page="structure" title="Structure, boucles, rétention, placeholders, chapitres"><i>🧱</i><span>Structure</span></button>
+    <button data-page="blancs" title="Jump-cut automatique (supprime les blancs)"><i>✂️</i><span>Blancs</span></button>
+    <button data-page="audio" title="Niveaux auto VO / musique / SFX + loudness"><i>🎚️</i><span>Audio</span></button>
+    <button data-page="short" title="Short 9:16 depuis la séquence"><i>📱</i><span>Short</span></button>
+    <button data-page="proxies" title="Proxies CineForm / ProRes en un clic"><i>⚡</i><span>Proxies</span></button>
+    <button data-page="verif" title="Vérif finale, feedbacks, fichier exporté"><i>✅</i><span>Vérif</span></button>
+    <button data-page="r360" title="Recadrage 360 (DJI Osmo 360, Insta360)"><i>🌐</i><span>360</span></button>
+  </nav>
+
+  <main class="pages">
+    <div class="banner" id="resume"><b>Reprise :</b> <span id="resumeText"></span><button class="link" id="resumeClose">OK</button></div>
+
+    <!-- ============================================================ ACCUEIL -->
+    <section class="page on" id="page-home">
+      <div class="card">
+        <div class="card-h">📅 Sortie <small>protocole vidéo longue</small></div>
+        <div class="row"><label>Date de sortie</label><input type="date" id="releaseDate"><span class="hint">vendredi soir</span></div>
+        <ul class="deadlines" id="deadlines"></ul>
+      </div>
+      <div class="card">
+        <div class="card-h">🏆 Ordre d'or <small id="goldenProgress"></small></div>
+        <div class="bar"><i id="goldenBar"></i></div>
+        <ul class="checklist" id="golden"></ul>
+      </div>
+      <div class="card">
+        <div class="card-h">⏱️ Session de montage</div>
+        <div class="row timer">
+          <span class="clock" id="timerClock">25:00</span>
+          <button class="btn sm" data-min="15">15</button><button class="btn sm" data-min="25">25</button><button class="btn sm" data-min="45">45</button>
+          <button class="btn primary sm" id="timerStart">Démarrer</button>
+        </div>
+        <label class="lbl">Où j'en suis / prochaine action <small>(arrête-toi au milieu d'une coupe : effet Zeigarnik)</small></label>
+        <textarea id="resumeNote" rows="2" placeholder="Ex : finir la coupe du passage piéton, puis poser la musique de la phase 6"></textarea>
+      </div>
+      <div class="card">
+        <div class="card-h">💾 Sauvegarde</div>
+        <div class="row"><button class="btn primary" id="btnBackup">Sauvegarder + copie de secours</button><span class="hint" id="backupInfo"></span></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ DÉRUSH -->
+    <section class="page" id="page-derush">
+      <div class="card clipcard">
+        <div class="card-h">🎞️ Clip en cours <small id="dClipFrom"></small><button class="link" id="dRefresh">Actualiser</button></div>
+        <div class="clipname" id="dClipName">Ouvre un rush dans le moniteur Source</div>
+        <div class="clipmeta" id="dClipMeta"></div>
+        <div class="rates">
+          <button class="rate a" data-rate="A" title="Excellent (touche 1)">A<small>1</small></button>
+          <button class="rate b" data-rate="B" title="Correct (touche 2)">B<small>2</small></button>
+          <button class="rate c" data-rate="C" title="À jeter (touche 3)">C<small>3</small></button>
+          <button class="rate top" id="dTop" title="Moment fort à la position du moniteur Source (touche 4 ou T)">⭐<small>4</small></button>
+        </div>
+        <div class="row"><input type="text" id="dNote" placeholder="Note rapide (N) : « intro possible », « transition »… puis Entrée"><button class="btn" id="dNoteBtn">Marqueur</button></div>
+        <div class="row"><label class="check"><input type="checkbox" id="dAuto"> Clip suivant automatiquement après la note</label></div>
+        <div class="row speeds"><span class="hint">Lecture Source</span>
+          <button class="btn sm" data-speed="1">×1</button><button class="btn sm" data-speed="1.5">×1,5</button><button class="btn sm" data-speed="2">×2</button><button class="btn sm" data-speed="0">⏸</button>
+          <button class="btn primary sm next" id="dNext" title="Clip suivant non noté (S ou →)">Suivant ›</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h">📋 File de dérush <small id="dProgress"></small></div>
+        <div class="bar"><i id="dBar"></i></div>
+        <div class="row"><select id="dScope"></select><select id="dFilter">
+          <option value="todo">Non notés</option><option value="all">Tous</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="top">⭐</option>
+        </select></div>
+        <ul class="list" id="dList"></ul>
+      </div>
+      <div class="card">
+        <div class="card-h">⭐ Sélects</div>
+        <div class="row"><label class="check"><input type="checkbox" id="dIncludeB"> Inclure les B</label></div>
+        <div class="row"><label>Plans ⭐ : avant</label><input type="number" id="dTopBefore" value="2" min="0" step="0.5"><label class="short">après</label><input type="number" id="dTopAfter" value="4" min="0" step="0.5"><span class="hint">s</span></div>
+        <div class="row"><button class="btn primary" id="dMakeSelects">Créer SÉLECTS + ⭐ TOP</button><button class="btn" id="dCopyTop">Copier la liste ⭐</button></div>
+        <p class="hint">Crée des sous-clips : tes rushs restent rangés à leur place. Si tu as posé un point d'entrée/sortie dans le moniteur Source, seul ce passage est gardé.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ STRUCTURE -->
+    <section class="page" id="page-structure">
+      <div class="card">
+        <div class="card-h">🧱 Plan de la vidéo <button class="link" id="sImport">Importer…</button></div>
+        <div class="row"><label>Durée cible</label><input type="text" id="sTarget" placeholder="15:00" class="time"><span class="hint" id="sTotal"></span></div>
+        <table class="tbl" id="sSegs"><thead><tr><th>Segment</th><th>Durée</th><th>Émotion</th><th></th></tr></thead><tbody></tbody></table>
+        <button class="link" id="sAddSeg">+ segment</button>
+      </div>
+      <div class="card">
+        <div class="card-h">🔁 Boucles <small>toujours 1 à 3 ouvertes</small></div>
+        <table class="tbl" id="sLoops"><thead><tr><th>Boucle</th><th>Ouvre</th><th>Ferme</th><th></th></tr></thead><tbody></tbody></table>
+        <button class="link" id="sAddLoop">+ boucle</button>
+      </div>
+      <div class="card">
+        <div class="card-h">📈 Carte de rétention <small>clic = aller à ce moment</small></div>
+        <canvas id="sMap" class="map"></canvas>
+        <ul class="issues" id="sIssues"></ul>
+        <div class="row"><button class="btn primary" id="sPush">Poser sur la timeline</button><button class="btn" id="sPull" title="Relit les marqueurs [SEG] / [LOOP] que tu as déplacés dans Premiere">Lire depuis la timeline</button></div>
+      </div>
+      <div class="card">
+        <div class="card-h">🧩 Placeholder <small>pour un plan pas encore tourné</small></div>
+        <div class="row"><input type="text" id="phName" placeholder="Nom (ex : MANETTE)"><input type="number" id="phDur" value="4" min="0.5" step="0.5" class="num"><span class="hint">s</span></div>
+        <div class="row"><input type="text" id="phNote" placeholder="Note (optionnel) : cadrage, idée…"><button class="btn primary" id="phMake">Poser à la tête de lecture</button></div>
+      </div>
+      <div class="card">
+        <div class="card-h">📑 Chapitres YouTube <button class="link" id="chCopy">Copier</button></div>
+        <textarea id="chText" rows="5" readonly></textarea>
+        <ul class="issues" id="chWarn"></ul>
+      </div>
+    </section>
+
+    <!-- ============================================================ BLANCS -->
+    <section class="page" id="page-blancs">
+      <div class="card">
+        <div class="card-h">✂️ Jump-cut automatique</div>
+        <p class="hint">Sélectionne dans la timeline un clip face caméra ou une voix off, puis analyse. Une nouvelle séquence est créée : l'original n'est pas touché.</p>
+        <div class="row"><button class="btn" id="bPick">Prendre le clip sélectionné</button></div>
+        <div class="clipname" id="bClip">—</div>
+        <div class="grid2">
+          <label>Seuil de silence</label><span><input type="number" id="bThr" value="-38" step="1" class="num"> dB</span>
+          <label>Blanc minimum</label><span><input type="number" id="bMin" value="0.45" step="0.05" class="num"> s</span>
+          <label>Marge gardée</label><span><input type="number" id="bPad" value="0.12" step="0.02" class="num"> s</span>
+        </div>
+        <div class="row"><button class="btn primary" id="bAnalyze">Analyser</button></div>
+        <canvas id="bViz" class="viz"></canvas>
+        <div class="result" id="bResult"></div>
+        <div class="row"><button class="btn primary" id="bApply" disabled>Créer la séquence sans blancs</button><button class="btn" id="bMarkers" disabled>Marqueurs seulement</button></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ AUDIO -->
+    <section class="page" id="page-audio">
+      <div class="card">
+        <div class="card-h">🎚️ Niveaux automatiques <small>crête par rôle</small></div>
+        <table class="tbl" id="aTracks"><thead><tr><th>Piste</th><th>Rôle</th><th>Clips</th></tr></thead><tbody></tbody></table>
+        <div class="grid3">
+          <label>Voix off<input type="number" id="aVo" step="1" class="num"></label>
+          <label>Musique<input type="number" id="aMu" step="1" class="num"></label>
+          <label>SFX<input type="number" id="aFx" step="1" class="num"></label>
+        </div>
+        <div class="row"><button class="btn primary" id="aAnalyze">Analyser</button><button class="btn" id="aApply" disabled>Appliquer les gains</button></div>
+        <div class="result" id="aResult"></div>
+        <table class="tbl small" id="aClips"><thead><tr><th>Clip</th><th>Crête</th><th>Gain</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <div class="card-h">📏 Loudness du fichier exporté <small>YouTube : −14 LUFS</small></div>
+        <div class="row"><button class="btn" id="lPick">Choisir le fichier exporté…</button></div>
+        <div class="result" id="lResult"></div>
+        <canvas id="lGraph" class="map"></canvas>
+        <ul class="issues" id="lIssues"></ul>
+      </div>
+    </section>
+
+    <!-- ============================================================ SHORT -->
+    <section class="page" id="page-short">
+      <div class="card">
+        <div class="card-h">📱 Short depuis la vidéo</div>
+        <ol class="steps">
+          <li>Dans la séquence, pose un <b>point d'entrée (I)</b> et un <b>point de sortie (O)</b> autour du moment.</li>
+          <li>Clique sur <b>Créer le Short</b> : nouvelle séquence avec ce passage, recadrée en 9:16 par l'Auto Reframe de Premiere.</li>
+        </ol>
+        <div class="row"><label>Plage</label><span id="shRange" class="hint">—</span></div>
+        <div class="row"><input type="text" id="shName" placeholder="Nom du Short"></div>
+        <div class="row"><label class="check"><input type="checkbox" id="shReframe" checked> Auto Reframe 9:16</label></div>
+        <div class="row"><button class="btn primary" id="shMake">Créer le Short</button></div>
+        <div class="result" id="shResult"></div>
+      </div>
+      <div class="card">
+        <div class="card-h">🧠 Structure Short qui retient <small id="shProgress"></small></div>
+        <ul class="checklist" id="shChecklist"></ul>
+      </div>
+    </section>
+
+    <!-- ============================================================ PROXIES -->
+    <section class="page" id="page-proxies">
+      <div class="card">
+        <div class="card-h">⚡ Proxies en un clic <small>montage fluide même en 8K</small></div>
+        <div class="grid2">
+          <label>Clips</label><select id="pScope"><option value="selection">Sélection du panneau Projet</option><option value="all">Tout le projet</option></select>
+          <label>Format</label><select id="pCodec"><option value="cineform">GoPro CineForm</option><option value="prores">ProRes Proxy</option></select>
+          <label>Largeur</label><select id="pWidth"><option value="960">960 px</option><option value="1280" selected>1280 px</option><option value="1920">1920 px</option></select>
+        </div>
+        <div class="row folder"><label>Dossier</label><span class="path" id="pDir">« Proxies » à côté des rushs</span><button class="link" id="pDirBtn">Changer</button></div>
+        <div class="row"><button class="btn" id="pScan">Compter</button><button class="btn primary" id="pStart">Créer et attacher</button><button class="link" id="pCancel">Annuler</button></div>
+        <div class="bar"><i id="pBar"></i></div>
+        <div class="result" id="pResult"></div>
+        <p class="hint">Ensuite, active le bouton « Activer/désactiver les proxys » du moniteur Programme. L'export utilise toujours les fichiers originaux.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ VÉRIF -->
+    <section class="page" id="page-verif">
+      <div class="card">
+        <div class="card-h">✅ Vérif avant export</div>
+        <div class="row"><button class="btn primary" id="vRun">Lancer la vérification</button><span class="hint" id="vSummary"></span></div>
+        <ul class="audit" id="vList"></ul>
+      </div>
+      <div class="card">
+        <div class="card-h">💬 Feedbacks <small>colle les retours avec leurs timecodes</small></div>
+        <textarea id="fbText" rows="4" placeholder="2:31 trop long&#10;à 4min10 le son sature&#10;12:05-12:40 coupe ça"></textarea>
+        <div class="row"><button class="btn primary" id="fbPush">Poser en marqueurs</button><span class="hint" id="fbInfo"></span></div>
+        <ul class="list" id="fbList"></ul>
+      </div>
+      <div class="card">
+        <div class="card-h">📦 Fichier exporté</div>
+        <div class="row"><button class="btn" id="eBtn">Vérifier un export…</button></div>
+        <ul class="audit" id="eList"></ul>
+      </div>
+    </section>
+
+    <!-- ============================================================ 360 -->
+    <section class="page" id="page-r360">
+      <div class="card">
+        <div class="card-h">🌐 Reframe 360</div>
+        <p>Recadre tes vidéos 360 (DJI Osmo 360, Insta360) en plans 16:9, 9:16, Tiny Planet… avec images clés, en 10 bits.</p>
+        <p class="hint">Rappel : exporte d'abord tes <b>.OSV</b> en vidéo 360 depuis DJI Studio. Les <b>.LRF</b> sont des aperçus basse résolution.</p>
+        <div class="row"><button class="btn primary" id="rOpen">Ouvrir Reframe 360</button></div>
+        <p class="hint">Aussi dans Fenêtre › Extensions › LOAN Studio — Reframe 360.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ RÉGLAGES -->
+    <section class="page" id="page-settings">
+      <div class="card">
+        <div class="card-h">🏷️ Notes de dérush → étiquettes Premiere</div>
+        <div class="grid2">
+          <label>A</label><select class="labelSel" data-k="labelA"></select>
+          <label>B</label><select class="labelSel" data-k="labelB"></select>
+          <label>C</label><select class="labelSel" data-k="labelC"></select>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h">💾 Copies de secours</div>
+        <div class="row folder"><span class="path" id="setBackupDir">À côté du projet / Backups LOAN</span><button class="link" id="setBackupBtn">Changer</button></div>
+      </div>
+      <div class="card">
+        <div class="card-h">🎬 FFmpeg</div>
+        <div class="row folder"><span class="path" id="setFF">—</span></div>
+        <div class="row"><label class="check"><input type="checkbox" id="setHw"> Décodage GPU</label></div>
+      </div>
+      <div class="card">
+        <div class="card-h">🩺 Diagnostic <button class="link" id="diagCopy">Copier</button></div>
+        <pre class="diag" id="diag">…</pre>
+      </div>
+      <div class="card about">LOAN Studio 2.0 — construit autour de ta méthode : dérush A/B/C, ordre d'or, boucles, mix VO −6 / musique −18 / SFX −12, master −14/−16 LUFS.</div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal" id="modal">
+  <div class="modal-box">
+    <div class="card-h" id="modalTitle">Importer</div>
+    <p class="hint" id="modalHint"></p>
+    <textarea id="modalText" rows="10"></textarea>
+    <div class="row right"><button class="btn" id="modalCancel">Annuler</button><button class="btn primary" id="modalOk">Importer</button></div>
+  </div>
+</div>
+
+<script src="../shared/js/host.js"></script>
+<script src="../shared/js/ffmpeg-loader.js"></script>
+<script src="js/core/core.js"></script>
+<script src="js/app/base.js"></script>
+<script src="js/app/home.js"></script>
+<script src="js/app/derush.js"></script>
+<script src="js/app/structure.js"></script>
+<script src="js/app/blancs.js"></script>
+<script src="js/app/audio.js"></script>
+<script src="js/app/short.js"></script>
+<script src="js/app/proxies.js"></script>
+<script src="js/app/verif.js"></script>
+<script src="js/app/main.js"></script>
+</body>
+</html>

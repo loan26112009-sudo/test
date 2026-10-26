@@ -1,0 +1,47 @@
+// Runs the LOAN Studio panel in Electron (CEP-like) against the simulated Premiere project.
+// Needs ELECTRON=/path/to/electron and an X display (xvfb-run). Usage: node tests/sim/studio-run.js [shotsDir]
+const cp = require('child_process'), fs = require('fs'), path = require('path'), os = require('os');
+const media = require('./media.js');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lssim-'));
+const m = media.make(tmp);
+const projDir = path.join(tmp, 'Projets', 'Le sourd');
+fs.mkdirSync(projDir, { recursive: true });
+const projectPath = path.join(projDir, 'Le sourd.prproj');
+fs.writeFileSync(projectPath, 'prproj');
+const appdata = path.join(tmp, 'appdata'); fs.mkdirSync(appdata);
+const shots = process.argv[2] || tmp;
+const cfg = { scenario: 'studio', media: m, projectPath, openFile: m.talk };
+const env = Object.assign({}, process.env, { R360_SIM: JSON.stringify(cfg), APPDATA: appdata, R360_SHOTS: shots });
+const electron = process.env.ELECTRON || require('electron');
+const res = cp.spawnSync(electron, ['--no-sandbox', path.join(__dirname, 'studio-main.js')], { env, encoding: 'utf8', timeout: 280000 });
+const line = (res.stdout || '').split('\n').find(l => l.startsWith('LSRESULT '));
+if (!line) { console.error(res.stdout, res.stderr); process.exit(1); }
+const r = JSON.parse(line.slice(9)), S = r.steps;
+let fail = 0;
+const check = (c, msg) => { console.log((c ? 'PASS ' : 'FAIL ') + msg); if (!c) fail++; };
+check(!r.exception, 'no exception ' + (r.exception || ''));
+check(S.ctx, 'header shows the active sequence');
+check(S.keys >= 10, 'studio shortcuts registered (' + S.keys + ')');
+check(S.deadlines === 8 && /J−\d+/.test(S.countdown), 'release planning: 8 deadlines, header countdown "' + S.countdown + '"');
+check(S.backup && fs.readdirSync(path.join(projDir, 'Backups LOAN')).length === 1, 'project saved + backup copy in "Backups LOAN"');
+check(S.derushLoaded, 'dérush: Source Monitor clip + queue loaded');
+check(S.ratedA && S.autoNext, 'key 1 rates A and jumps to the next unrated clip');
+check(S.top && S.ratedB, 'key 4 drops a ⭐ marker, key 2 rates B — ' + S.progress);
+check(S.selects, 'SÉLECTS + ⭐ TOP bins built');
+check(S.structure.segs === 3 && S.structure.loops === 2 && S.structure.target === 16, 'Loop Builder + segments imported: ' + JSON.stringify({ segs: S.structure.segs, loops: S.structure.loops, target: S.structure.target }));
+check(S.structure.issues.some(t => /même émotion/.test(t)) && S.structure.issues.some(t => /Aucune boucle/.test(t)), 'retention map flags: ' + S.structure.issues.join(' | '));
+check(S.pushed && S.pulled, 'markers pushed to the timeline, moved segment read back');
+check(/^0:00 Intro\n0:05 Phase 1\n/.test(S.chapters), 'YouTube chapters follow the timeline: ' + JSON.stringify(S.chapters));
+check(S.placeholder && S.musicIntact, 'placeholder slate generated and placed on V2 at the playhead, music on A2 untouched');
+check(S.blancs && /blanc/.test(S.blancsText) && S.jumpcut, 'jump-cut: ' + S.blancsText);
+check(S.audioAnalyzed && S.audioApplied && Math.abs(S.levels[0] - 14) < 0.6 && Math.abs(S.levels[1] - (-17.1)) < 0.6 && Math.abs(S.levels[2] - 2) < 0.6, 'audio gains VO/music/SFX = ' + JSON.stringify(S.levels) + ' dB (peaks −20/−0.9/−14 → targets −6/−18/−12)');
+check(S.loud, 'loudness of the exported file measured');
+check(/0:01 → 0:04/.test(S.shortRange) && S.short, 'short from in/out (' + S.shortRange + ') reframed to 9:16');
+check(S.proxies && S.attached.length === 3, 'proxies created and attached: ' + JSON.stringify(S.attached));
+check(S.audit.some(a => /❌ 1 placeholder/.test(a)) && S.audit.some(a => /trou/.test(a)), 'final check: ' + S.audit.join(' | '));
+check(S.feedback && S.feedbackDone, 'feedback timestamps → markers, one marked done');
+check(S.exportCheck, 'exported file check: ' + (S.exportItems || []).slice(0, 4).join(' | '));
+check(S.r360 && S.diag, 'Reframe 360 panel opened, diagnostic OK');
+check(S.projectFile === 1, 'project data saved in %APPDATA%\\LoanStudio');
+check(!r.errors.length, 'no console errors ' + r.errors.join(' | '));
+process.exit(fail ? 1 : 0);
