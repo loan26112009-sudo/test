@@ -710,12 +710,15 @@
     }
 
     // ── Lecture fichier audio ─────────────────────────────────────────────────
+    function getFs() {
+        try { return require("fs"); } catch(e) {}
+        try { return window.require("fs"); } catch(e) {}
+        return null;
+    }
+
     function readFileBuffer(path) {
         return new Promise(function (resolve, reject) {
-            var fs = null;
-            try { fs = require("fs"); } catch (e) {
-                try { fs = window.require("fs"); } catch (e2) {}
-            }
+            var fs = getFs();
             if (fs) {
                 try {
                     var buf = fs.readFileSync(path);
@@ -739,6 +742,84 @@
                 reject(new Error(err ? err.message : "Format audio non décodable."));
             });
         });
+    }
+
+    // ── Streaming audio pour fichiers > 1.5 GB ───────────────────────────────
+    // Le fichier n'est jamais chargé en RAM : on streame via l'élément <video>
+    // de Chromium et on capture les samples via ScriptProcessorNode.
+    // playbackRate=8 → 8× plus rapide → 10min de vidéo = ~75s d'analyse.
+    // Effective sampleRate = contextSR / playbackRate (timing reste correct).
+    var STREAM_RATE = 8;
+    function streamAudio(filePath) {
+        return new Promise(function (resolve, reject) {
+            var CTX_SR      = 22050;
+            var EFF_SR      = CTX_SR / STREAM_RATE;
+
+            if (_audioCtx) { try { _audioCtx.close(); } catch (e) {} }
+            _audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: CTX_SR });
+
+            var video = document.createElement("video");
+            video.src = "file:///" + filePath.replace(/\\/g, "/");
+            video.playbackRate = STREAM_RATE;
+
+            var chunks = [], total = 0;
+            var src, proc, mute;
+
+            video.addEventListener("loadedmetadata", function () {
+                src  = _audioCtx.createMediaElementSource(video);
+                proc = _audioCtx.createScriptProcessor(8192, 1, 1);
+                mute = _audioCtx.createGain();
+                mute.gain.value = 0;
+                src.connect(proc); proc.connect(mute); mute.connect(_audioCtx.destination);
+
+                proc.onaudioprocess = function (e) {
+                    var d = e.inputBuffer.getChannelData(0);
+                    chunks.push(new Float32Array(d));
+                    total += d.length;
+                    if (video.duration > 0) {
+                        var pct = 40 + Math.round(video.currentTime / video.duration * 48);
+                        setProgress(pct);
+                        setStatus("Streaming audio… " + Math.round(video.currentTime / video.duration * 100) + "%", "working");
+                    }
+                };
+
+                _audioCtx.resume().then(function () {
+                    video.play().catch(function (err) { reject(new Error("Lecture vidéo impossible : " + (err.message || err))); });
+                });
+            });
+
+            video.addEventListener("ended", function () {
+                try { proc.disconnect(); mute.disconnect(); src.disconnect(); } catch (e) {}
+                var combined = new Float32Array(total), off = 0;
+                for (var i = 0; i < chunks.length; i++) { combined.set(chunks[i], off); off += chunks[i].length; }
+                // Fake AudioBuffer avec le bon sampleRate effectif
+                resolve({
+                    length: total, sampleRate: EFF_SR, duration: total / EFF_SR,
+                    numberOfChannels: 1, getChannelData: function () { return combined; }
+                });
+            });
+
+            video.addEventListener("error", function () {
+                reject(new Error("Format non lisible. Essaie d'exporter l'audio en WAV depuis Premiere (Fichier → Exporter → Média → Format WAV) puis relance l'analyse."));
+            });
+
+            video.load();
+        });
+    }
+
+    // Sélectionne automatiquement la méthode selon la taille du fichier
+    var SIZE_LIMIT = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
+    function loadAudioBuffer(filePath) {
+        var fileSize = 0;
+        var fs = getFs();
+        if (fs) { try { fileSize = fs.statSync(filePath).size; } catch (e) {} }
+
+        if (fileSize > SIZE_LIMIT) {
+            var gb = (fileSize / 1e9).toFixed(1);
+            setStatus("Fichier volumineux (" + gb + " GB) — streaming…", "working");
+            return streamAudio(filePath);
+        }
+        return readFileBuffer(filePath).then(decodeAudio);
     }
 
     // ── Analyse principale ────────────────────────────────────────────────────
@@ -787,27 +868,20 @@
 
             setProgress(40); setStatus("Lecture du fichier audio...", "working");
 
-            readFileBuffer(clip.filePath).then(function (ab) {
-                setProgress(65); setStatus("Détection des silences...", "working");
-                decodeAudio(ab).then(function (buf) {
-                    audioBuffer = buf;
-                    setProgress(88);
-                    setTimeout(function () {
-                        silenceSegments = detectSilences(buf, getActiveParams(), clip);
-                        drawWaveform(buf, silenceSegments);
-                        drawMinimap(buf, silenceSegments);
-                        updateStats(silenceSegments, buf.duration);
-                        setProgress(0);
-                        var n = silenceSegments.filter(function(s){ return s.enabled; }).length;
-                        setStatus(n > 0 ? n + " zone(s) détectée(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
-                        btnPreview.disabled = false;
-                        updateApplyBtn();
-                    }, 0);
-                }).catch(function (err) {
-                    var msg = err && err.message ? err.message : "Format audio non décodable (essaie WAV ou MP3).";
-                    setStatus(msg, "error");
-                    setProgress(0); btnPreview.disabled = false;
-                });
+            loadAudioBuffer(clip.filePath).then(function (buf) {
+                audioBuffer = buf;
+                setProgress(88); setStatus("Détection des silences...", "working");
+                setTimeout(function () {
+                    silenceSegments = detectSilences(buf, getActiveParams(), clip);
+                    drawWaveform(buf, silenceSegments);
+                    drawMinimap(buf, silenceSegments);
+                    updateStats(silenceSegments, buf.duration);
+                    setProgress(0);
+                    var n = silenceSegments.filter(function(s){ return s.enabled; }).length;
+                    setStatus(n > 0 ? n + " zone(s) détectée(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
+                    btnPreview.disabled = false;
+                    updateApplyBtn();
+                }, 0);
             }).catch(function (e) {
                 setStatus(e && e.message ? e.message : "Fichier audio inaccessible.", "error");
                 setProgress(0); btnPreview.disabled = false;
