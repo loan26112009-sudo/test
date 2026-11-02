@@ -173,6 +173,27 @@
         tracksSect.style.display = "block";
     }
 
+    // ── Fusion des zones qui se chevauchent ───────────────────────────────────
+    function mergeOverlapping() {
+        if (silenceSegments.length < 2) return;
+        silenceSegments.sort(function(a, b){ return a._s - b._s; });
+        var merged = [silenceSegments[0]];
+        for (var i = 1; i < silenceSegments.length; i++) {
+            var prev = merged[merged.length - 1];
+            var cur  = silenceSegments[i];
+            if (cur._s <= prev._e) {
+                // Chevauchement → fusion (on garde enabled=true si l'un des deux l'est)
+                prev._e     = Math.max(prev._e, cur._e);
+                prev.end    = Math.max(prev.end || 0, cur.end || 0);
+                prev.enabled = prev.enabled || cur.enabled;
+                prev.custom  = prev.custom  || cur.custom;
+            } else {
+                merged.push(cur);
+            }
+        }
+        silenceSegments = merged;
+    }
+
     // ── Zoom helpers ──────────────────────────────────────────────────────────
     function clampView() {
         var range = Math.max(0.01, Math.min(1, viewEnd - viewStart));
@@ -292,6 +313,8 @@
     document.addEventListener("mouseup", function () {
         // ── Fin resize ──────────────────────────────────────────────────────
         if (resizing) {
+            mergeOverlapping();
+            drawWaveform(audioBuffer, silenceSegments);
             drawMinimap(audioBuffer, silenceSegments);
             updateStats(silenceSegments, audioBuffer.duration);
             updateApplyBtn();
@@ -317,6 +340,7 @@
                     start: smp0 / sr + (clip.srcStart || 0) + off,
                     end:   smp1 / sr + (clip.srcStart || 0) + off
                 });
+                mergeOverlapping();
                 updateStats(silenceSegments, audioBuffer.duration);
                 updateApplyBtn();
             }
