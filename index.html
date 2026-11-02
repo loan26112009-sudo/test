@@ -43,6 +43,38 @@
       </button>
     </div>
 
+    <!-- Mode avancé -->
+    <div id="advanced-toggle-row">
+      <button id="advanced-toggle" class="advanced-toggle-btn">⚙ Mode Avancé</button>
+    </div>
+
+    <div id="advanced-panel" style="display:none">
+      <div class="adv-row">
+        <label class="adv-label">Seuil silence</label>
+        <div class="adv-ctrl">
+          <input type="range" id="adv-threshold" min="-60" max="-10" step="1" value="-35">
+          <span class="adv-val" id="adv-threshold-val">-35 dB</span>
+        </div>
+        <span class="adv-hint">Plus haut = coupe plus de son</span>
+      </div>
+      <div class="adv-row">
+        <label class="adv-label">Durée min. silence</label>
+        <div class="adv-ctrl">
+          <input type="range" id="adv-min-silence" min="50" max="2000" step="25" value="300">
+          <span class="adv-val" id="adv-min-silence-val">300 ms</span>
+        </div>
+        <span class="adv-hint">Ignore les silences plus courts</span>
+      </div>
+      <div class="adv-row">
+        <label class="adv-label">Marge de sécurité</label>
+        <div class="adv-ctrl">
+          <input type="range" id="adv-padding" min="0" max="400" step="10" value="60">
+          <span class="adv-val" id="adv-padding-val">60 ms</span>
+        </div>
+        <span class="adv-hint">Espace conservé de chaque côté</span>
+      </div>
+    </div>
+
     <!-- Waveform + Aperçu -->
     <button id="btn-preview" class="btn btn-preview">
       ▶ &nbsp;Générer l'Aperçu

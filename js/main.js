@@ -19,6 +19,7 @@
         hard:     { thresholdDb: -25, minSilenceMs: 150, paddingMs:  20 }
     };
     var currentPreset = "balanced";
+    var advancedMode = false; // true = les sliders overrident le preset
 
     // ── DOM ────────────────────────────────────────────────────────────────
     var sdot         = document.getElementById("status-dot");
@@ -31,6 +32,14 @@
     var tracksSect   = document.getElementById("tracks-section");
     var trackPills   = document.getElementById("track-pills");
     var useCopyChk   = document.getElementById("use-copy");
+    var advToggleBtn = document.getElementById("advanced-toggle");
+    var advPanel     = document.getElementById("advanced-panel");
+    var advThreshold = document.getElementById("adv-threshold");
+    var advThreshVal = document.getElementById("adv-threshold-val");
+    var advMinSil    = document.getElementById("adv-min-silence");
+    var advMinSilVal = document.getElementById("adv-min-silence-val");
+    var advPadding   = document.getElementById("adv-padding");
+    var advPaddingVal= document.getElementById("adv-padding-val");
     var btnPreview   = document.getElementById("btn-preview");
     var btnApply     = document.getElementById("btn-apply");
     var toastEl      = document.getElementById("toast");
@@ -52,12 +61,60 @@
     }
     function fmt(s) { return s < 60 ? s.toFixed(1) + "s" : Math.floor(s/60) + "m" + (s%60).toFixed(0) + "s"; }
 
+    // ── Helpers avancé ────────────────────────────────────────────────────
+    function getActiveParams() {
+        if (advancedMode) {
+            return {
+                thresholdDb:  parseInt(advThreshold.value, 10),
+                minSilenceMs: parseInt(advMinSil.value, 10),
+                paddingMs:    parseInt(advPadding.value, 10)
+            };
+        }
+        return PRESETS[currentPreset];
+    }
+
+    function syncSlidersToPreset(key) {
+        var p = PRESETS[key];
+        advThreshold.value  = p.thresholdDb;
+        advThreshVal.textContent = p.thresholdDb + " dB";
+        advMinSil.value     = p.minSilenceMs;
+        advMinSilVal.textContent = p.minSilenceMs + " ms";
+        advPadding.value    = p.paddingMs;
+        advPaddingVal.textContent = p.paddingMs + " ms";
+    }
+    syncSlidersToPreset("balanced"); // init
+
+    // ── Toggle mode avancé ────────────────────────────────────────────────
+    advToggleBtn.addEventListener("click", function () {
+        var open = advPanel.style.display === "none";
+        advPanel.style.display = open ? "flex" : "none";
+        advToggleBtn.classList.toggle("open", open);
+        if (open) advancedMode = true;
+        else { advancedMode = false; if (audioBuffer) reanalyze(); }
+    });
+
+    // Sliders live update
+    [advThreshold, advMinSil, advPadding].forEach(function (el) {
+        el.addEventListener("input", function () {
+            advThreshVal.textContent  = advThreshold.value  + " dB";
+            advMinSilVal.textContent  = advMinSil.value     + " ms";
+            advPaddingVal.textContent = advPadding.value    + " ms";
+            // Déselectionner preset actif visuellement (custom)
+            document.querySelectorAll(".preset-btn").forEach(function (b) { b.classList.remove("active"); });
+        });
+        el.addEventListener("change", function () {
+            if (audioBuffer) reanalyze();
+        });
+    });
+
     // ── Preset selector ────────────────────────────────────────────────────
     document.querySelectorAll(".preset-btn").forEach(function (btn) {
         btn.addEventListener("click", function () {
             document.querySelectorAll(".preset-btn").forEach(function (b) { b.classList.remove("active"); });
             btn.classList.add("active");
             currentPreset = btn.dataset.preset;
+            advancedMode = false;
+            syncSlidersToPreset(currentPreset);
             if (audioBuffer) reanalyze();
         });
     });
@@ -155,8 +212,8 @@
     }
 
     // ── Détection silences ─────────────────────────────────────────────────
-    function detectSilences(buf, presetKey, clip) {
-        var p       = PRESETS[presetKey];
+    function detectSilences(buf, params, clip) {
+        var p       = params;
         var sr      = buf.sampleRate;
         var thrLin  = Math.pow(10, p.thresholdDb / 20);
         var minSmp  = Math.floor(p.minSilenceMs  / 1000 * sr);
@@ -277,7 +334,7 @@
         if (!audioBuffer) return;
         var clip = clipsList[0] || {};
         setTimeout(function () {
-            silenceSegments = detectSilences(audioBuffer, currentPreset, clip);
+            silenceSegments = detectSilences(audioBuffer, getActiveParams(), clip);
             drawWaveform(audioBuffer, silenceSegments);
             updateStats(silenceSegments, audioBuffer.duration);
             var n = silenceSegments.length;
@@ -338,7 +395,7 @@
                     audioBuffer = buf;
                     setProgress(85);
                     setTimeout(function () {
-                        silenceSegments = detectSilences(buf, currentPreset, clip);
+                        silenceSegments = detectSilences(buf, getActiveParams(), clip);
                         drawWaveform(buf, silenceSegments);
                         updateStats(silenceSegments, buf.duration);
                         setProgress(0);
