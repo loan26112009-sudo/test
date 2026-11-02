@@ -694,8 +694,23 @@
 
         var useCopy = useCopyChk.checked;
         btnPreview.disabled = true; btnApply.disabled = true;
-        setStatus(useCopy ? "Création de la copie..." : "Application des coupes...", "working");
-        setProgress(15);
+
+        // Countdown estimé : ~350ms par coupe ripple dans Premiere Pro
+        var MS_PER_CUT = 350;
+        var totalEstMs = enabledSils.length * MS_PER_CUT + (useCopy ? 900 : 0);
+        var startTs = Date.now();
+
+        var ticker = setInterval(function () {
+            var elapsed = Date.now() - startTs;
+            var pct = Math.min(92, Math.round(elapsed / totalEstMs * 100));
+            var remSec = Math.max(0, Math.ceil((totalEstMs - elapsed) / 1000));
+            setProgress(pct);
+            if (remSec > 0) {
+                setStatus((useCopy ? "Copie + " : "") + "Raccordement ripple… ~" + remSec + "s", "working");
+            } else {
+                setStatus("Finalisation…", "working");
+            }
+        }, 100);
 
         var seqSils = enabledSils
             .filter(function(s){ return s.end - s.start > 0.05; })
@@ -706,6 +721,7 @@
         var trackJSON = JSON.stringify(trackSelection).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
 
         evalScript("applySilenceCuts('" + silJSON + "','" + trackJSON + "','" + (useCopy?"true":"false") + "')").then(function (raw) {
+            clearInterval(ticker);
             setProgress(0);
             try {
                 var r = JSON.parse(raw);
@@ -715,8 +731,8 @@
                     btnPreview.disabled = false;
                 } else {
                     var msg = r.isCopy
-                        ? "✓ " + r.cuts + " coupe(s) dans « " + r.sequenceName + " »"
-                        : "✓ " + r.cuts + " zone(s) supprimée(s)";
+                        ? "✓ " + r.cuts + " cut(s) raccordés dans « " + r.sequenceName + " »"
+                        : "✓ " + r.cuts + " silence(s) supprimés & raccordés";
                     setStatus(msg, "ok"); showToast(msg, "ok");
                     audioBuffer = null; silenceSegments = [];
                     viewStart = 0; viewEnd = 1;
@@ -728,6 +744,7 @@
                     btnPreview.disabled = false; btnApply.disabled = true;
                 }
             } catch (e) {
+                clearInterval(ticker);
                 setStatus("Réponse inattendue.", "error");
                 btnPreview.disabled = false;
             }
