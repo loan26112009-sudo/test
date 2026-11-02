@@ -1,24 +1,37 @@
 /**
- * AutoCut Silence — v1.1
- * Zoom waveform + click pour toggle zones + auto-analyse au démarrage
+ * AutoCut Silence — v1.2
+ * Interactions waveform :
+ *   - Molette           → zoom
+ *   - Clic sur zone     → toggle exclu/actif
+ *   - Glisser sur vide  → créer une nouvelle zone de coupe
+ *   - Minimap drag      → naviguer dans la vue
  */
 (function () {
     "use strict";
 
     var cs = new CSInterface();
     var audioBuffer     = null;
-    var silenceSegments = [];
+    var silenceSegments = [];   // {_s, _e, enabled, custom?, start, end}
     var clipsList       = [];
     var tracksInfo      = [];
     var selectedTracks  = [];
 
-    // ── Zoom / pan state ────────────────────────────────────────────────────
-    var viewStart  = 0;
-    var viewEnd    = 1;
-    var panStart   = null;   // {x, vs, ve} quand on fait glisser
-    var pendingToggle = -1;  // index de silence à basculer au mouseup
+    // ── Zoom ─────────────────────────────────────────────────────────────────
+    var viewStart = 0;
+    var viewEnd   = 1;
 
-    // ── Presets ──────────────────────────────────────────────────────────────
+    // ── Selection (créer une coupe manuellement) ──────────────────────────────
+    var selecting    = false;
+    var selFracStart = -1;
+    var selFracEnd   = -1;
+
+    // ── Minimap drag (pan) ────────────────────────────────────────────────────
+    var mmDrag = null;  // {startFrac, vs, ve}
+
+    // ── Toggle pending ────────────────────────────────────────────────────────
+    var pendingToggle = -1;
+
+    // ── Presets ───────────────────────────────────────────────────────────────
     var PRESETS = {
         soft:     { thresholdDb: -45, minSilenceMs: 600, paddingMs: 120 },
         balanced: { thresholdDb: -35, minSilenceMs: 300, paddingMs:  60 },
@@ -27,7 +40,7 @@
     var currentPreset = "balanced";
     var advancedMode  = false;
 
-    // ── DOM ──────────────────────────────────────────────────────────────────
+    // ── DOM ───────────────────────────────────────────────────────────────────
     var sdot          = document.getElementById("status-dot");
     var stxt          = document.getElementById("status-text");
     var pwrap         = document.getElementById("progress-bar-wrap");
@@ -52,7 +65,7 @@
     var btnApply      = document.getElementById("btn-apply");
     var toastEl       = document.getElementById("toast");
 
-    // ── Helpers UI ───────────────────────────────────────────────────────────
+    // ── Helpers UI ────────────────────────────────────────────────────────────
     function setStatus(txt, type) {
         stxt.textContent = txt;
         sdot.className = "status-dot " + (type || "");
@@ -68,29 +81,25 @@
         toastEl._t = setTimeout(function () { toastEl.className = ""; }, 3200);
     }
     function fmt(s) { return s < 60 ? s.toFixed(1) + "s" : Math.floor(s/60) + "m" + (s%60|0) + "s"; }
-
     function updateApplyBtn() {
-        var n = silenceSegments.filter(function(s){ return s.enabled; }).length;
-        btnApply.disabled = n === 0;
+        btnApply.disabled = silenceSegments.filter(function(s){ return s.enabled; }).length === 0;
     }
 
-    // ── Advanced params ──────────────────────────────────────────────────────
+    // ── Advanced params ───────────────────────────────────────────────────────
     function getActiveParams() {
-        if (advancedMode) {
-            return {
-                thresholdDb:  parseInt(advThreshold.value, 10),
-                minSilenceMs: parseInt(advMinSil.value, 10),
-                paddingMs:    parseInt(advPadding.value, 10)
-            };
-        }
+        if (advancedMode) return {
+            thresholdDb:  parseInt(advThreshold.value, 10),
+            minSilenceMs: parseInt(advMinSil.value, 10),
+            paddingMs:    parseInt(advPadding.value, 10)
+        };
         return PRESETS[currentPreset];
     }
 
     function syncSlidersToPreset(key) {
         var p = PRESETS[key];
-        advThreshold.value  = p.thresholdDb;   advThreshVal.textContent  = p.thresholdDb  + " dB";
-        advMinSil.value     = p.minSilenceMs;  advMinSilVal.textContent  = p.minSilenceMs + " ms";
-        advPadding.value    = p.paddingMs;     advPaddingVal.textContent = p.paddingMs    + " ms";
+        advThreshold.value = p.thresholdDb;   advThreshVal.textContent  = p.thresholdDb  + " dB";
+        advMinSil.value    = p.minSilenceMs;  advMinSilVal.textContent  = p.minSilenceMs + " ms";
+        advPadding.value   = p.paddingMs;     advPaddingVal.textContent = p.paddingMs    + " ms";
     }
     syncSlidersToPreset("balanced");
 
@@ -112,7 +121,7 @@
         el.addEventListener("change", function () { if (audioBuffer) reanalyze(); });
     });
 
-    // ── Preset selector ───────────────────────────────────────────────────────
+    // ── Presets ───────────────────────────────────────────────────────────────
     document.querySelectorAll(".preset-btn").forEach(function (btn) {
         btn.addEventListener("click", function () {
             document.querySelectorAll(".preset-btn").forEach(function(b){ b.classList.remove("active"); });
@@ -154,13 +163,14 @@
         tracksSect.style.display = "block";
     }
 
-    // ── Zoom / pan helpers ────────────────────────────────────────────────────
+    // ── Zoom helpers ──────────────────────────────────────────────────────────
     function clampView() {
-        var range = Math.max(0.02, Math.min(1, viewEnd - viewStart));
-        if (viewStart < 0)  { viewStart = 0;        viewEnd = range; }
-        if (viewEnd   > 1)  { viewEnd   = 1;         viewStart = 1 - range; }
+        var range = Math.max(0.01, Math.min(1, viewEnd - viewStart));
+        if (viewStart < 0) { viewStart = 0; viewEnd = range; }
+        if (viewEnd   > 1) { viewEnd   = 1; viewStart = 1 - range; }
     }
 
+    // Retourne l'index du silence sous la fraction canvas (0..1), ou -1
     function getSilenceAtFrac(frac) {
         if (!audioBuffer || !silenceSegments.length) return -1;
         var n    = audioBuffer.length;
@@ -172,7 +182,7 @@
         return -1;
     }
 
-    // Mouse wheel → zoom
+    // ── Waveform — mouse wheel → zoom ─────────────────────────────────────────
     canvas.addEventListener("wheel", function (e) {
         e.preventDefault();
         if (!audioBuffer) return;
@@ -180,7 +190,7 @@
         var frac   = (e.clientX - rect.left) / rect.width;
         var pivot  = viewStart + frac * (viewEnd - viewStart);
         var factor = e.deltaY > 0 ? 1.35 : (1 / 1.35);
-        var range  = Math.min(1, Math.max(0.02, (viewEnd - viewStart) * factor));
+        var range  = Math.min(1, Math.max(0.01, (viewEnd - viewStart) * factor));
         viewStart  = pivot - frac * range;
         viewEnd    = viewStart + range;
         clampView();
@@ -188,36 +198,67 @@
         drawMinimap(audioBuffer, silenceSegments);
     }, { passive: false });
 
-    // Mousedown → détecter si on clique sur un silence ou sur fond (pan)
+    // ── Waveform — mousedown : toggle ou début de sélection ───────────────────
     canvas.addEventListener("mousedown", function (e) {
-        if (e.button !== 0) return;
+        if (e.button !== 0 || !audioBuffer) return;
         var rect = canvas.getBoundingClientRect();
         var frac = (e.clientX - rect.left) / rect.width;
         var hit  = getSilenceAtFrac(frac);
+
         if (hit >= 0) {
+            // On est sur une zone → on va toggler au mouseup
             pendingToggle = hit;
-            panStart = null;
+            selecting = false;
         } else {
-            panStart = { x: e.clientX, vs: viewStart, ve: viewEnd };
+            // Zone vide → début de sélection pour créer une coupe
+            selFracStart = frac;
+            selFracEnd   = frac;
+            selecting    = true;
             pendingToggle = -1;
         }
         e.preventDefault();
     });
 
+    // ── Document — mousemove ──────────────────────────────────────────────────
     document.addEventListener("mousemove", function (e) {
-        if (!panStart) return;
-        pendingToggle = -1; // drag annule le toggle prévu
-        var rect  = canvas.getBoundingClientRect();
-        var dx    = (panStart.x - e.clientX) / rect.width;
-        var range = panStart.ve - panStart.vs;
-        viewStart = panStart.vs + dx * range;
-        viewEnd   = viewStart + range;
-        clampView();
-        drawWaveform(audioBuffer, silenceSegments);
-        drawMinimap(audioBuffer, silenceSegments);
+        if (!selecting || !audioBuffer) return;
+        var rect   = canvas.getBoundingClientRect();
+        var frac   = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        selFracEnd = frac;
+        drawWaveform(audioBuffer, silenceSegments);  // redessine avec overlay sélection
     });
 
+    // ── Document — mouseup : finalise l'action ────────────────────────────────
     document.addEventListener("mouseup", function () {
+        // ── Créer une coupe si sélection assez grande (> 1% de la vue)
+        if (selecting && audioBuffer) {
+            var f0 = Math.min(selFracStart, selFracEnd);
+            var f1 = Math.max(selFracStart, selFracEnd);
+            if (f1 - f0 > 0.01) {
+                var n    = audioBuffer.length;
+                var sr   = audioBuffer.sampleRate;
+                var vf0  = viewStart + f0 * (viewEnd - viewStart);
+                var vf1  = viewStart + f1 * (viewEnd - viewStart);
+                var smp0 = Math.floor(vf0 * n);
+                var smp1 = Math.floor(vf1 * n);
+                var clip = clipsList[0] || {};
+                var off  = (clip.seqStart || 0) - (clip.srcStart || 0);
+                silenceSegments.push({
+                    _s: smp0, _e: smp1, enabled: true, custom: true,
+                    start: smp0 / sr + (clip.srcStart || 0) + off,
+                    end:   smp1 / sr + (clip.srcStart || 0) + off
+                });
+                updateStats(silenceSegments, audioBuffer.duration);
+                updateApplyBtn();
+            }
+            selecting    = false;
+            selFracStart = -1;
+            selFracEnd   = -1;
+            drawWaveform(audioBuffer, silenceSegments);
+            drawMinimap(audioBuffer, silenceSegments);
+        }
+
+        // ── Toggle silence (clic sans drag) ──────────────────────────────────
         if (pendingToggle >= 0 && audioBuffer) {
             var sil = silenceSegments[pendingToggle];
             if (sil) {
@@ -228,28 +269,50 @@
                 updateApplyBtn();
             }
         }
-        panStart      = null;
         pendingToggle = -1;
     });
 
+    // ── Waveform — curseur ────────────────────────────────────────────────────
     canvas.addEventListener("mousemove", function (e) {
         if (!audioBuffer) return;
         var rect = canvas.getBoundingClientRect();
         var frac = (e.clientX - rect.left) / rect.width;
-        if (getSilenceAtFrac(frac) >= 0) {
+        if (selecting) {
+            canvas.style.cursor = "crosshair";
+        } else if (getSilenceAtFrac(frac) >= 0) {
             canvas.style.cursor = "pointer";
-        } else if (viewEnd - viewStart < 0.98) {
-            canvas.style.cursor = panStart ? "grabbing" : "grab";
         } else {
-            canvas.style.cursor = "default";
+            canvas.style.cursor = "crosshair";
         }
     });
-
     canvas.addEventListener("mouseleave", function () { canvas.style.cursor = "default"; });
 
-    // Minimap click → centrer la vue
+    // ── Minimap — drag pour naviguer ──────────────────────────────────────────
+    minimap.addEventListener("mousedown", function (e) {
+        if (e.button !== 0 || !audioBuffer) return;
+        var rect = minimap.getBoundingClientRect();
+        var frac = (e.clientX - rect.left) / rect.width;
+        mmDrag = { startFrac: frac, vs: viewStart, ve: viewEnd };
+        e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", function (e) {
+        if (!mmDrag || !audioBuffer) return;
+        var rect  = minimap.getBoundingClientRect();
+        var frac  = (e.clientX - rect.left) / rect.width;
+        var dx    = frac - mmDrag.startFrac;
+        var range = mmDrag.ve - mmDrag.vs;
+        viewStart = mmDrag.vs + dx;
+        viewEnd   = mmDrag.ve + dx;
+        clampView();
+        drawWaveform(audioBuffer, silenceSegments);
+        drawMinimap(audioBuffer, silenceSegments);
+    });
+
+    document.addEventListener("mouseup", function () { mmDrag = null; });
+
     minimap.addEventListener("click", function (e) {
-        if (!audioBuffer) return;
+        if (mmDrag || !audioBuffer) return; // ne pas jump si on vient de drag
         var rect  = minimap.getBoundingClientRect();
         var frac  = (e.clientX - rect.left) / rect.width;
         var range = viewEnd - viewStart;
@@ -260,7 +323,7 @@
         drawMinimap(audioBuffer, silenceSegments);
     });
 
-    // ── Draw waveform (avec zoom) ─────────────────────────────────────────────
+    // ── Draw waveform ─────────────────────────────────────────────────────────
     function drawWaveform(buf, sils) {
         var ctx = canvas.getContext("2d");
         var W = canvas.offsetWidth, H = canvas.offsetHeight;
@@ -277,13 +340,15 @@
         var block = Math.max(1, Math.floor(viewN / W));
         var mid   = H / 2;
 
-        // Fond des zones silence
+        // Fond des zones silence (auto ou manuelles)
         sils.forEach(function (s) {
             var x0 = Math.floor((s._s - s0) / viewN * W);
             var x1 = Math.ceil( (s._e - s0) / viewN * W);
             if (x1 < 0 || x0 > W) return;
             x0 = Math.max(0, x0); x1 = Math.min(W, x1);
-            ctx.fillStyle = s.enabled ? "rgba(239,68,68,.14)" : "rgba(249,115,22,.1)";
+            ctx.fillStyle = s.enabled
+                ? (s.custom ? "rgba(239,68,68,.2)" : "rgba(239,68,68,.14)")
+                : "rgba(249,115,22,.1)";
             ctx.fillRect(x0, 0, x1 - x0, H);
         });
 
@@ -302,30 +367,40 @@
         }
         ctx.stroke();
 
-        // Bordures des zones silence
+        // Bordures zones silence
         sils.forEach(function (s) {
             var x0 = (s._s - s0) / viewN * W;
             var x1 = (s._e - s0) / viewN * W;
             if (x1 < 0 || x0 > W) return;
-            ctx.strokeStyle = s.enabled ? "rgba(239,68,68,.65)" : "rgba(249,115,22,.6)";
+            ctx.strokeStyle = s.enabled ? "rgba(239,68,68,.6)" : "rgba(249,115,22,.55)";
             ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
             if (x0 >= 0 && x0 <= W) { ctx.beginPath(); ctx.moveTo(x0+.5, 0); ctx.lineTo(x0+.5, H); ctx.stroke(); }
             if (x1 >= 0 && x1 <= W) { ctx.beginPath(); ctx.moveTo(x1-.5, 0); ctx.lineTo(x1-.5, H); ctx.stroke(); }
         });
         ctx.setLineDash([]);
 
-        // Règle de temps (quand zoomé)
+        // Overlay sélection en cours (teal)
+        if (selecting && selFracStart >= 0 && selFracEnd >= 0) {
+            var sf0 = Math.min(selFracStart, selFracEnd) * W;
+            var sf1 = Math.max(selFracStart, selFracEnd) * W;
+            ctx.fillStyle   = "rgba(34,211,238,.18)";
+            ctx.strokeStyle = "rgba(34,211,238,.75)";
+            ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.fillRect(sf0, 0, sf1 - sf0, H);
+            ctx.strokeRect(sf0 + .5, .5, sf1 - sf0 - 1, H - 1);
+        }
+
+        // Règle de temps quand zoomé
         if (viewEnd - viewStart < 0.5 && buf.duration > 0) {
             ctx.fillStyle = "rgba(20,20,22,.75)";
             ctx.fillRect(0, H - 13, W, 13);
-            ctx.fillStyle = "rgba(255,255,255,.45)";
             ctx.font = "8px monospace";
             var dur = buf.duration;
             for (var step = 0; step <= 8; step++) {
                 var fr  = step / 8;
                 var sec = (viewStart + fr * (viewEnd - viewStart)) * dur;
                 var xp  = fr * W;
-                ctx.fillStyle = "rgba(255,255,255,.25)";
+                ctx.fillStyle = "rgba(255,255,255,.22)";
                 ctx.fillRect(xp, H - 13, 1, 4);
                 if (step > 0 && step < 8) {
                     ctx.fillStyle = "rgba(255,255,255,.45)";
@@ -351,7 +426,7 @@
         var block = Math.max(1, Math.floor(n / W));
         var mid   = H / 2;
 
-        ctx.beginPath(); ctx.strokeStyle = "rgba(124,124,252,.38)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.strokeStyle = "rgba(124,124,252,.36)"; ctx.lineWidth = 1;
         for (var x = 0; x < W; x++) {
             var f = x * block, t = Math.min(f + block, n), mn = 0, mx = 0;
             for (var j = f; j < t; j++) {
@@ -389,7 +464,7 @@
         var tot = on.reduce(function(a, s){ return a + (s.end - s.start); }, 0);
         var pct = dur > 0 ? Math.round(tot / dur * 100) : 0;
         [
-            { t: on.length + " silence(s)",    cls: on.length > 0 ? "red" : "" },
+            { t: on.length + " zone(s)",       cls: on.length > 0 ? "red" : "" },
             { t: fmt(tot) + " à supprimer",    cls: tot > 0 ? "red" : "" },
             { t: pct + "% du clip",             cls: pct > 0 ? "acc" : "" }
         ].forEach(function (d) {
@@ -406,7 +481,7 @@
         }
     }
 
-    // ── Détection silences ────────────────────────────────────────────────────
+    // ── Silence detection ─────────────────────────────────────────────────────
     function detectSilences(buf, params, clip) {
         var p      = params;
         var sr     = buf.sampleRate;
@@ -434,39 +509,40 @@
             } else {
                 if (silStart >= 0) {
                     if (i - silStart >= minSmp) {
-                        var ss = Math.max(0, silStart + padSmp);
-                        var se = Math.max(ss + win, i - padSmp);
-                        var off2 = (clip.seqStart || 0) - (clip.srcStart || 0);
+                        var ss  = Math.max(0, silStart + padSmp);
+                        var se  = Math.max(ss + win, i - padSmp);
+                        var off = (clip.seqStart || 0) - (clip.srcStart || 0);
                         result.push({ _s: ss, _e: se, enabled: true,
-                            start: ss / sr + (clip.srcStart || 0) + off2,
-                            end:   se / sr + (clip.srcStart || 0) + off2 });
+                            start: ss / sr + (clip.srcStart || 0) + off,
+                            end:   se / sr + (clip.srcStart || 0) + off });
                     }
                     silStart = -1;
                 }
             }
         }
         if (silStart >= 0 && n - silStart >= minSmp) {
-            var ss = Math.max(0, silStart + padSmp);
-            var se = Math.max(ss + win, n - padSmp);
-            var off2 = (clip.seqStart || 0) - (clip.srcStart || 0);
+            var ss  = Math.max(0, silStart + padSmp);
+            var se  = Math.max(ss + win, n - padSmp);
+            var off = (clip.seqStart || 0) - (clip.srcStart || 0);
             result.push({ _s: ss, _e: se, enabled: true,
-                start: ss / sr + (clip.srcStart || 0) + off2,
-                end:   se / sr + (clip.srcStart || 0) + off2 });
+                start: ss / sr + (clip.srcStart || 0) + off,
+                end:   se / sr + (clip.srcStart || 0) + off });
         }
         return result;
     }
 
-    // ── Re-analyse (sans recharger l'audio) ──────────────────────────────────
+    // ── Re-analyse (conserve les coupes manuelles) ────────────────────────────
     function reanalyze() {
         if (!audioBuffer) return;
-        var clip = clipsList[0] || {};
+        var clip    = clipsList[0] || {};
+        var manuals = silenceSegments.filter(function(s){ return s.custom; });
         setTimeout(function () {
-            silenceSegments = detectSilences(audioBuffer, getActiveParams(), clip);
+            silenceSegments = detectSilences(audioBuffer, getActiveParams(), clip).concat(manuals);
             drawWaveform(audioBuffer, silenceSegments);
             drawMinimap(audioBuffer, silenceSegments);
             updateStats(silenceSegments, audioBuffer.duration);
             var n = silenceSegments.filter(function(s){ return s.enabled; }).length;
-            setStatus(n > 0 ? n + " silence(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
+            setStatus(n > 0 ? n + " zone(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
             updateApplyBtn();
         }, 0);
     }
@@ -538,8 +614,7 @@
         wph.style.display        = "flex";
         minimap.setAttribute("hidden", "");
         waveHint.style.display   = "none";
-        drawWaveform(null, []);
-        statsEl.innerHTML = "";
+        drawWaveform(null, []); statsEl.innerHTML = "";
 
         setStatus("Connexion à Premiere Pro...", "working");
         setProgress(10);
@@ -586,26 +661,24 @@
                         updateStats(silenceSegments, buf.duration);
                         setProgress(0);
                         var n = silenceSegments.filter(function(s){ return s.enabled; }).length;
-                        setStatus(n > 0 ? n + " silence(s) détecté(s) — Prêt !" : "Aucun silence détecté", n > 0 ? "ok" : "");
+                        setStatus(n > 0 ? n + " zone(s) détectée(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
                         btnPreview.disabled = false;
                         updateApplyBtn();
                     }, 0);
                 }).catch(function () {
-                    setStatus("Format audio non supporté (MP4/WAV requis).", "error");
+                    setStatus("Format non supporté (MP4/WAV).", "error");
                     setProgress(0); btnPreview.disabled = false;
                 });
             }).catch(function (e) {
                 setStatus(e.message, "error");
                 setProgress(0); btnPreview.disabled = false;
             });
-        }).catch(function () {
-            setProgress(0); btnPreview.disabled = false;
-        });
+        }).catch(function () { setProgress(0); btnPreview.disabled = false; });
     }
 
     btnPreview.addEventListener("click", runPreview);
 
-    // ── Couper les silences ───────────────────────────────────────────────────
+    // ── Couper ────────────────────────────────────────────────────────────────
     btnApply.addEventListener("click", function () {
         var enabledSils = silenceSegments.filter(function(s){ return s.enabled; });
         if (!enabledSils.length) return;
@@ -620,8 +693,7 @@
         }
 
         var useCopy = useCopyChk.checked;
-        btnPreview.disabled = true;
-        btnApply.disabled   = true;
+        btnPreview.disabled = true; btnApply.disabled = true;
         setStatus(useCopy ? "Création de la copie..." : "Application des coupes...", "working");
         setProgress(15);
 
@@ -644,7 +716,7 @@
                 } else {
                     var msg = r.isCopy
                         ? "✓ " + r.cuts + " coupe(s) dans « " + r.sequenceName + " »"
-                        : "✓ " + r.cuts + " silence(s) supprimé(s)";
+                        : "✓ " + r.cuts + " zone(s) supprimée(s)";
                     setStatus(msg, "ok"); showToast(msg, "ok");
                     audioBuffer = null; silenceSegments = [];
                     viewStart = 0; viewEnd = 1;
@@ -662,7 +734,7 @@
         });
     });
 
-    // ── Init — auto-analyse si une séquence est déjà ouverte ──────────────────
+    // ── Init — auto-analyse si séquence ouverte ───────────────────────────────
     if (cs.isLoaded()) {
         evalScript("getSequenceInfo()").then(function (raw) {
             try {
