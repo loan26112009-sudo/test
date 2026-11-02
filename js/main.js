@@ -219,16 +219,13 @@
         if (!audioBuffer || !silenceSegments.length) return null;
         var n = audioBuffer.length;
         var W = canvas.offsetWidth || 1;
-        var pixPerFrac = W; // frac [0,1] → px [0,W]
         for (var i = 0; i < silenceSegments.length; i++) {
-            var s   = silenceSegments[i];
-            var f0  = (s._s / n - viewStart) / (viewEnd - viewStart);
-            var f1  = (s._e / n - viewStart) / (viewEnd - viewStart);
-            var px0 = f0 * pixPerFrac;
-            var px1 = f1 * pixPerFrac;
-            var pxC = frac * pixPerFrac;
-            if (Math.abs(pxC - px0) <= EDGE_PX) return { idx: i, edge: "start" };
-            if (Math.abs(pxC - px1) <= EDGE_PX) return { idx: i, edge: "end"   };
+            var s  = silenceSegments[i];
+            var f0 = (s._s / n - viewStart) / (viewEnd - viewStart);
+            var f1 = (s._e / n - viewStart) / (viewEnd - viewStart);
+            // Ignore les bords hors de la vue visible
+            if (f0 >= -0.01 && f0 <= 1.01 && Math.abs((frac - f0) * W) <= EDGE_PX) return { idx: i, edge: "start" };
+            if (f1 >= -0.01 && f1 <= 1.01 && Math.abs((frac - f1) * W) <= EDGE_PX) return { idx: i, edge: "end"   };
         }
         return null;
     }
@@ -591,7 +588,13 @@
         statsEl.innerHTML = "";
         var on  = sils.filter(function(s){ return s.enabled; });
         var off = sils.length - on.length;
-        var tot = on.reduce(function(a, s){ return a + (s.end - s.start); }, 0);
+        var sr2 = audioBuffer ? audioBuffer.sampleRate : 44100;
+        var tot = on.reduce(function(a, s){
+            var dur = (s.end !== undefined && s.start !== undefined)
+                ? s.end - s.start
+                : (s._e - s._s) / sr2;
+            return a + Math.max(0, dur);
+        }, 0);
         var pct = dur > 0 ? Math.round(tot / dur * 100) : 0;
         [
             { t: on.length + " zone(s)",       cls: on.length > 0 ? "red" : "" },
@@ -668,6 +671,7 @@
         var manuals = silenceSegments.filter(function(s){ return s.custom; });
         setTimeout(function () {
             silenceSegments = detectSilences(audioBuffer, getActiveParams(), clip).concat(manuals);
+            mergeOverlapping(); // fusionne si zones manuelles chevauchent les auto
             drawWaveform(audioBuffer, silenceSegments);
             drawMinimap(audioBuffer, silenceSegments);
             updateStats(silenceSegments, audioBuffer.duration);
@@ -726,10 +730,14 @@
         });
     }
 
+    var _audioCtx = null;
     function decodeAudio(ab) {
         return new Promise(function (resolve, reject) {
-            var ctx = new (window.AudioContext || window.webkitAudioContext)();
-            ctx.decodeAudioData(ab.slice(0), resolve, reject);
+            if (_audioCtx) { try { _audioCtx.close(); } catch (e) {} }
+            _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            _audioCtx.decodeAudioData(ab.slice(0), resolve, function (err) {
+                reject(new Error(err ? err.message : "Format audio non décodable."));
+            });
         });
     }
 
@@ -795,15 +803,19 @@
                         btnPreview.disabled = false;
                         updateApplyBtn();
                     }, 0);
-                }).catch(function () {
-                    setStatus("Format non supporté (MP4/WAV).", "error");
+                }).catch(function (err) {
+                    var msg = err && err.message ? err.message : "Format audio non décodable (essaie WAV ou MP3).";
+                    setStatus(msg, "error");
                     setProgress(0); btnPreview.disabled = false;
                 });
             }).catch(function (e) {
-                setStatus(e.message, "error");
+                setStatus(e && e.message ? e.message : "Fichier audio inaccessible.", "error");
                 setProgress(0); btnPreview.disabled = false;
             });
-        }).catch(function () { setProgress(0); btnPreview.disabled = false; });
+        }).catch(function (err) {
+            if (err !== "no seq") setStatus("Erreur de connexion à Premiere Pro.", "error");
+            setProgress(0); btnPreview.disabled = false;
+        });
     }
 
     btnPreview.addEventListener("click", runPreview);
@@ -850,34 +862,36 @@
         var silJSON   = JSON.stringify(seqSils).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
         var trackJSON = JSON.stringify(trackSelection).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
 
-        evalScript("applySilenceCuts('" + silJSON + "','" + trackJSON + "','" + (useCopy?"true":"false") + "')").then(function (raw) {
-            clearInterval(ticker);
-            setProgress(0);
-            try {
-                var r = JSON.parse(raw);
-                if (r.error) {
-                    setStatus("Erreur : " + r.error, "error");
-                    showToast(r.error, "err");
-                    btnPreview.disabled = false;
-                } else {
-                    var msg = r.isCopy
-                        ? "✓ " + r.cuts + " cut(s) raccordés dans « " + r.sequenceName + " »"
-                        : "✓ " + r.cuts + " silence(s) supprimés & raccordés";
-                    setStatus(msg, "ok"); showToast(msg, "ok");
-                    audioBuffer = null; silenceSegments = [];
-                    viewStart = 0; viewEnd = 1;
-                    wph.style.display = "flex";
-                    minimap.setAttribute("hidden", "");
-                    waveHint.style.display = "none";
-                    drawWaveform(null, []); statsEl.innerHTML = "";
-                    tracksSect.style.display = "none";
-                    btnPreview.disabled = false; btnApply.disabled = true;
-                }
-            } catch (e) {
-                clearInterval(ticker);
-                setStatus("Réponse inattendue.", "error");
-                btnPreview.disabled = false;
+        function finishApply() { clearInterval(ticker); setProgress(0); btnPreview.disabled = false; }
+
+        evalScript("applySilenceCuts('" + silJSON + "','" + trackJSON + "','" + (useCopy?"true":"false") + "')")
+        .then(function (raw) {
+            finishApply();
+            var r = null;
+            try { r = JSON.parse(raw); } catch (e) {}
+            if (!r || r.error) {
+                var msg = r && r.error ? r.error : "Réponse inattendue.";
+                setStatus("Erreur : " + msg, "error");
+                showToast(msg, "err");
+                return;
             }
+            var n = r.cuts || 0;
+            var out = r.isCopy
+                ? "✓ " + n + " cut(s) raccordés dans « " + (r.sequenceName || "copie") + " »"
+                : "✓ " + n + " silence(s) supprimés & raccordés";
+            setStatus(out, "ok"); showToast(out, "ok");
+            audioBuffer = null; silenceSegments = [];
+            viewStart = 0; viewEnd = 1;
+            wph.style.display = "flex";
+            minimap.setAttribute("hidden", "");
+            waveHint.style.display = "none";
+            drawWaveform(null, []); statsEl.innerHTML = "";
+            tracksSect.style.display = "none";
+            btnApply.disabled = true;
+        })
+        .catch(function () {
+            finishApply();
+            setStatus("Erreur de communication avec Premiere.", "error");
         });
     });
 
