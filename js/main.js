@@ -31,6 +31,16 @@
     // ── Toggle pending ────────────────────────────────────────────────────────
     var pendingToggle = -1;
 
+    // ── Resize d'une zone (drag sur le bord) ─────────────────────────────────
+    var resizing = null;  // {idx, edge:'start'|'end'}
+
+    // ── Historique Ctrl+Z ─────────────────────────────────────────────────────
+    var undoHistory = [];
+    function pushHistory() {
+        undoHistory.push(JSON.stringify(silenceSegments));
+        if (undoHistory.length > 50) undoHistory.shift();
+    }
+
     // ── Presets ───────────────────────────────────────────────────────────────
     var PRESETS = {
         soft:     { thresholdDb: -45, minSilenceMs: 600, paddingMs: 120 },
@@ -182,6 +192,26 @@
         return -1;
     }
 
+    // Retourne {idx, edge} si on est sur un bord de zone (±EDGE pixels), ou null
+    var EDGE_PX = 7;
+    function getEdgeAtFrac(frac) {
+        if (!audioBuffer || !silenceSegments.length) return null;
+        var n = audioBuffer.length;
+        var W = canvas.offsetWidth || 1;
+        var pixPerFrac = W; // frac [0,1] → px [0,W]
+        for (var i = 0; i < silenceSegments.length; i++) {
+            var s   = silenceSegments[i];
+            var f0  = (s._s / n - viewStart) / (viewEnd - viewStart);
+            var f1  = (s._e / n - viewStart) / (viewEnd - viewStart);
+            var px0 = f0 * pixPerFrac;
+            var px1 = f1 * pixPerFrac;
+            var pxC = frac * pixPerFrac;
+            if (Math.abs(pxC - px0) <= EDGE_PX) return { idx: i, edge: "start" };
+            if (Math.abs(pxC - px1) <= EDGE_PX) return { idx: i, edge: "end"   };
+        }
+        return null;
+    }
+
     // ── Waveform — mouse wheel → zoom ─────────────────────────────────────────
     canvas.addEventListener("wheel", function (e) {
         e.preventDefault();
@@ -198,43 +228,82 @@
         drawMinimap(audioBuffer, silenceSegments);
     }, { passive: false });
 
-    // ── Waveform — mousedown : toggle ou début de sélection ───────────────────
+    // ── Waveform — mousedown : resize | toggle | créer ───────────────────────
     canvas.addEventListener("mousedown", function (e) {
         if (e.button !== 0 || !audioBuffer) return;
         var rect = canvas.getBoundingClientRect();
         var frac = (e.clientX - rect.left) / rect.width;
-        var hit  = getSilenceAtFrac(frac);
 
-        if (hit >= 0) {
-            // On est sur une zone → on va toggler au mouseup
-            pendingToggle = hit;
-            selecting = false;
+        var edge = getEdgeAtFrac(frac);
+        if (edge) {
+            // Resize d'un bord existant
+            pushHistory();
+            resizing = edge;
+            selecting = false; pendingToggle = -1;
         } else {
-            // Zone vide → début de sélection pour créer une coupe
-            selFracStart = frac;
-            selFracEnd   = frac;
-            selecting    = true;
-            pendingToggle = -1;
+            var hit = getSilenceAtFrac(frac);
+            if (hit >= 0) {
+                // On est sur une zone → toggler au mouseup
+                pendingToggle = hit;
+                selecting = false; resizing = null;
+            } else {
+                // Zone vide → créer une coupe
+                selFracStart = frac; selFracEnd = frac;
+                selecting = true; pendingToggle = -1; resizing = null;
+            }
         }
         e.preventDefault();
     });
 
     // ── Document — mousemove ──────────────────────────────────────────────────
     document.addEventListener("mousemove", function (e) {
-        if (!selecting || !audioBuffer) return;
-        var rect   = canvas.getBoundingClientRect();
-        var frac   = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-        selFracEnd = frac;
-        drawWaveform(audioBuffer, silenceSegments);  // redessine avec overlay sélection
+        if (!audioBuffer) return;
+        var rect = canvas.getBoundingClientRect();
+        var frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+        if (resizing) {
+            var s  = silenceSegments[resizing.idx];
+            var n  = audioBuffer.length;
+            var sr = audioBuffer.sampleRate;
+            var vf = viewStart + frac * (viewEnd - viewStart);
+            var smp = Math.floor(vf * n);
+            var clip = clipsList[0] || {};
+            var off  = (clip.seqStart || 0) - (clip.srcStart || 0);
+            if (resizing.edge === "start") {
+                smp = Math.max(0, Math.min(s._e - 1, smp));
+                s._s   = smp;
+                s.start = smp / sr + (clip.srcStart || 0) + off;
+            } else {
+                smp = Math.min(n - 1, Math.max(s._s + 1, smp));
+                s._e   = smp;
+                s.end   = smp / sr + (clip.srcStart || 0) + off;
+            }
+            drawWaveform(audioBuffer, silenceSegments);
+            return;
+        }
+
+        if (selecting) {
+            selFracEnd = frac;
+            drawWaveform(audioBuffer, silenceSegments);
+        }
     });
 
     // ── Document — mouseup : finalise l'action ────────────────────────────────
     document.addEventListener("mouseup", function () {
+        // ── Fin resize ──────────────────────────────────────────────────────
+        if (resizing) {
+            drawMinimap(audioBuffer, silenceSegments);
+            updateStats(silenceSegments, audioBuffer.duration);
+            updateApplyBtn();
+            resizing = null; return;
+        }
+
         // ── Créer une coupe si sélection assez grande (> 1% de la vue)
         if (selecting && audioBuffer) {
             var f0 = Math.min(selFracStart, selFracEnd);
             var f1 = Math.max(selFracStart, selFracEnd);
             if (f1 - f0 > 0.01) {
+                pushHistory();
                 var n    = audioBuffer.length;
                 var sr   = audioBuffer.sampleRate;
                 var vf0  = viewStart + f0 * (viewEnd - viewStart);
@@ -262,6 +331,7 @@
         if (pendingToggle >= 0 && audioBuffer) {
             var sil = silenceSegments[pendingToggle];
             if (sil) {
+                pushHistory();
                 sil.enabled = !sil.enabled;
                 drawWaveform(audioBuffer, silenceSegments);
                 drawMinimap(audioBuffer, silenceSegments);
@@ -272,20 +342,42 @@
         pendingToggle = -1;
     });
 
+    // ── Double-clic sur une zone = la supprimer ───────────────────────────────
+    canvas.addEventListener("dblclick", function (e) {
+        if (!audioBuffer) return;
+        var rect = canvas.getBoundingClientRect();
+        var frac = (e.clientX - rect.left) / rect.width;
+        var hit  = getSilenceAtFrac(frac);
+        if (hit >= 0) {
+            pushHistory();
+            silenceSegments.splice(hit, 1);
+            pendingToggle = -1;
+            drawWaveform(audioBuffer, silenceSegments);
+            drawMinimap(audioBuffer, silenceSegments);
+            updateStats(silenceSegments, audioBuffer.duration);
+            updateApplyBtn();
+            showToast("Zone supprimée (Ctrl+Z pour annuler)", "");
+        }
+    });
+
     // ── Waveform — curseur ────────────────────────────────────────────────────
     canvas.addEventListener("mousemove", function (e) {
         if (!audioBuffer) return;
         var rect = canvas.getBoundingClientRect();
         var frac = (e.clientX - rect.left) / rect.width;
-        if (selecting) {
+        if (resizing) {
+            canvas.style.cursor = "ew-resize";
+        } else if (selecting) {
             canvas.style.cursor = "crosshair";
+        } else if (getEdgeAtFrac(frac)) {
+            canvas.style.cursor = "ew-resize";
         } else if (getSilenceAtFrac(frac) >= 0) {
             canvas.style.cursor = "pointer";
         } else {
             canvas.style.cursor = "crosshair";
         }
     });
-    canvas.addEventListener("mouseleave", function () { canvas.style.cursor = "default"; });
+    canvas.addEventListener("mouseleave", function () { if (!resizing) canvas.style.cursor = "default"; });
 
     // ── Minimap — drag pour naviguer ──────────────────────────────────────────
     minimap.addEventListener("mousedown", function (e) {
@@ -321,6 +413,20 @@
         clampView();
         drawWaveform(audioBuffer, silenceSegments);
         drawMinimap(audioBuffer, silenceSegments);
+    });
+
+    // ── Ctrl+Z — undo ─────────────────────────────────────────────────────────
+    document.addEventListener("keydown", function (e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+            e.preventDefault();
+            if (!audioBuffer || undoHistory.length === 0) return;
+            silenceSegments = JSON.parse(undoHistory.pop());
+            drawWaveform(audioBuffer, silenceSegments);
+            drawMinimap(audioBuffer, silenceSegments);
+            updateStats(silenceSegments, audioBuffer.duration);
+            updateApplyBtn();
+            showToast("Annulé (Ctrl+Z)", "");
+        }
     });
 
     // ── Draw waveform ─────────────────────────────────────────────────────────
