@@ -1,95 +1,117 @@
-// AutoCut Silence - ExtendScript pour Premiere Pro
+// AutoCut Silence — ExtendScript Premiere Pro
 
-// Vérifie si une séquence active existe
 function checkSequence() {
     if (!app.project) return JSON.stringify({ error: "Aucun projet ouvert." });
     if (!app.project.activeSequence) return JSON.stringify({ error: "Aucune séquence active. Ouvrez une séquence." });
     return null;
 }
 
-// Retourne les infos de la séquence active
+// Infos de la séquence active
 function getSequenceInfo() {
     var err = checkSequence();
     if (err) return err;
-
     try {
         var seq = app.project.activeSequence;
         return JSON.stringify({
             name: seq.name,
             duration: seq.end.seconds,
             videoTracks: seq.videoTracks.numTracks,
-            audioTracks: seq.audioTracks.numTracks,
-            timebase: seq.timebase
+            audioTracks: seq.audioTracks.numTracks
         });
     } catch (e) {
         return JSON.stringify({ error: "Erreur séquence : " + e.message });
     }
 }
 
-// Retourne les infos des clips audio + vidéo (chemins source)
+// Retourne les pistes qui ont du contenu (pour affichage dynamique)
+function getSequenceTracksInfo() {
+    var err = checkSequence();
+    if (err) return err;
+    try {
+        var seq = app.project.activeSequence;
+        var tracks = [];
+
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) {
+            var t = seq.videoTracks[v];
+            if (t.clips.numItems > 0) {
+                tracks.push({ type: "video", index: v, name: "Vidéo " + (v + 1), clips: t.clips.numItems });
+            }
+        }
+        for (var a = 0; a < seq.audioTracks.numTracks; a++) {
+            var t = seq.audioTracks[a];
+            if (t.clips.numItems > 0) {
+                tracks.push({ type: "audio", index: a, name: "Audio " + (a + 1), clips: t.clips.numItems });
+            }
+        }
+        return JSON.stringify({ tracks: tracks });
+    } catch (e) {
+        return JSON.stringify({ error: "Erreur pistes : " + e.message });
+    }
+}
+
+// Retourne le chemin du fichier source pour l'analyse audio
 function getClipsInfo() {
     var err = checkSequence();
     if (err) return err;
-
     try {
         var seq = app.project.activeSequence;
-        var result = { audioClips: [], videoClips: [] };
+        var audioClips = [];
 
-        // Piste audio (piste 1)
+        // Cherche d'abord sur les pistes audio
         if (seq.audioTracks.numTracks > 0) {
-            var aTrack = seq.audioTracks[0];
-            for (var i = 0; i < aTrack.clips.numItems; i++) {
-                var clip = aTrack.clips[i];
-                var filePath = "";
-                try { filePath = clip.projectItem.getMediaPath(); } catch(e2) {}
-                result.audioClips.push({
+            var at = seq.audioTracks[0];
+            for (var i = 0; i < at.clips.numItems; i++) {
+                var clip = at.clips[i];
+                var fp = "";
+                try { fp = clip.projectItem.getMediaPath(); } catch(e2) {}
+                audioClips.push({
                     name: clip.name,
                     seqStart: clip.start.seconds,
-                    seqEnd: clip.end.seconds,
+                    seqEnd:   clip.end.seconds,
                     srcStart: clip.inPoint.seconds,
-                    srcEnd: clip.outPoint.seconds,
-                    filePath: filePath
+                    srcEnd:   clip.outPoint.seconds,
+                    filePath: fp
                 });
             }
         }
-
-        // Piste vidéo (pour audio embarqué si pas de piste audio séparée)
-        if (result.audioClips.length === 0 && seq.videoTracks.numTracks > 0) {
-            var vTrack = seq.videoTracks[0];
-            for (var i = 0; i < vTrack.clips.numItems; i++) {
-                var clip = vTrack.clips[i];
-                var filePath = "";
-                try { filePath = clip.projectItem.getMediaPath(); } catch(e2) {}
-                if (filePath) {
-                    result.audioClips.push({
-                        name: clip.name,
-                        seqStart: clip.start.seconds,
-                        seqEnd: clip.end.seconds,
-                        srcStart: clip.inPoint.seconds,
-                        srcEnd: clip.outPoint.seconds,
-                        filePath: filePath,
-                        fromVideo: true
-                    });
-                }
+        // Fallback sur piste vidéo (audio embarqué)
+        if (audioClips.length === 0 && seq.videoTracks.numTracks > 0) {
+            var vt = seq.videoTracks[0];
+            for (var i = 0; i < vt.clips.numItems; i++) {
+                var clip = vt.clips[i];
+                var fp = "";
+                try { fp = clip.projectItem.getMediaPath(); } catch(e2) {}
+                if (fp) audioClips.push({
+                    name: clip.name,
+                    seqStart: clip.start.seconds,
+                    seqEnd:   clip.end.seconds,
+                    srcStart: clip.inPoint.seconds,
+                    srcEnd:   clip.outPoint.seconds,
+                    filePath: fp,
+                    fromVideo: true
+                });
             }
         }
-
-        return JSON.stringify(result);
+        return JSON.stringify({ audioClips: audioClips });
     } catch (e) {
         return JSON.stringify({ error: "Erreur clips : " + e.message });
     }
 }
 
-// Applique les coupes sur la séquence
-// silencesJSON : [{start, end}, ...] en secondes dans la timeline
-// numVideoTracks : combien de pistes vidéo couper (1 ou 2)
-function applySilenceCuts(silencesJSON, numVideoTracksStr) {
+/**
+ * Applique les coupes sur une séquence (originale ou copie).
+ * silencesJSON  : [{start, end}, ...] en secondes (ordre décroissant requis)
+ * tracksJSON    : [{type:"video"|"audio", index:N}, ...] pistes à couper
+ * useCopyStr    : "true" = travaille sur une copie, "false" = modifie directement
+ */
+function applySilenceCuts(silencesJSON, tracksJSON, useCopyStr) {
     var err = checkSequence();
     if (err) return err;
 
     try {
-        var silences = JSON.parse(silencesJSON);
-        var numVideoTracks = parseInt(numVideoTracksStr, 10) || 2;
+        var silences  = JSON.parse(silencesJSON);
+        var trackSel  = JSON.parse(tracksJSON);
+        var useCopy   = (useCopyStr === "true");
 
         if (!silences || silences.length === 0) {
             return JSON.stringify({ error: "Aucun silence à couper." });
@@ -97,51 +119,49 @@ function applySilenceCuts(silencesJSON, numVideoTracksStr) {
 
         var seq = app.project.activeSequence;
 
-        // Filtre les segments trop courts et trie en ordre INVERSE (pour éviter décalage de positions)
-        silences = silences.filter(function(s) { return (s.end - s.start) > 0.05; });
+        // ── Sécurité : on travaille sur une copie ───────────────────────────
+        if (useCopy) {
+            var copy = seq.clone();
+            if (!copy) return JSON.stringify({ error: "Impossible de dupliquer la séquence." });
+            copy.name = seq.name + " — AutoCut";
+            seq = copy;
+            seq.open(); // Rend la copie active dans Premiere Pro
+        }
+
+        // ── Trier en ordre décroissant (obligatoire pour ripple correct) ────
         silences.sort(function(a, b) { return b.start - a.start; });
 
+        var TOLE = 0.06; // tolérance 60ms pour matching post-razor
         var cutsMade = 0;
-        var TOLERANCE = 0.05; // 50ms de tolérance pour la correspondance de clips
 
         for (var i = 0; i < silences.length; i++) {
-            var silence = silences[i];
-            var startSec = silence.start;
-            var endSec = silence.end;
+            var sil = silences[i];
+            var startSec = sil.start;
+            var endSec   = sil.end;
+            if (endSec - startSec < 0.05) continue; // ignore segments < 50ms
 
-            // On coupe avec Razor sur toute la séquence aux deux extrémités
-            var startTime = new Time();
-            startTime.seconds = startSec;
-            var endTime = new Time();
-            endTime.seconds = endSec;
+            // 1) Razor sur toute la séquence aux deux extrémités
+            var tStart = new Time(); tStart.seconds = startSec;
+            var tEnd   = new Time(); tEnd.seconds   = endSec;
+            seq.razor(tStart);
+            seq.razor(tEnd);
 
-            seq.razor(startTime);
-            seq.razor(endTime);
+            // 2) Supprime sur chaque piste sélectionnée
+            for (var t = 0; t < trackSel.length; t++) {
+                var ts = trackSel[t];
+                var track = ts.type === "video"
+                    ? seq.videoTracks[ts.index]
+                    : seq.audioTracks[ts.index];
 
-            // --- Pistes vidéo (les N premières) ---
-            var videoCount = Math.min(numVideoTracks, seq.videoTracks.numTracks);
-            for (var v = 0; v < videoCount; v++) {
-                var vTrack = seq.videoTracks[v];
-                for (var c = vTrack.clips.numItems - 1; c >= 0; c--) {
-                    var vClip = vTrack.clips[c];
-                    var cs = vClip.start.seconds;
-                    var ce = vClip.end.seconds;
-                    if (Math.abs(cs - startSec) < TOLERANCE && Math.abs(ce - endSec) < TOLERANCE) {
-                        vClip.remove(true, true); // ripple delete
-                        break;
-                    }
-                }
-            }
+                if (!track) continue;
 
-            // --- Piste audio (première piste) ---
-            if (seq.audioTracks.numTracks > 0) {
-                var aTrack = seq.audioTracks[0];
-                for (var c = aTrack.clips.numItems - 1; c >= 0; c--) {
-                    var aClip = aTrack.clips[c];
-                    var cs = aClip.start.seconds;
-                    var ce = aClip.end.seconds;
-                    if (Math.abs(cs - startSec) < TOLERANCE && Math.abs(ce - endSec) < TOLERANCE) {
-                        aClip.remove(true, true);
+                // Cherche le clip qui correspond exactement à ce segment
+                for (var c = track.clips.numItems - 1; c >= 0; c--) {
+                    var clip = track.clips[c];
+                    var cs = clip.start.seconds;
+                    var ce = clip.end.seconds;
+                    if (Math.abs(cs - startSec) < TOLE && Math.abs(ce - endSec) < TOLE) {
+                        clip.remove(true, true); // ripple = true, alignToVideo = true
                         break;
                     }
                 }
@@ -150,64 +170,10 @@ function applySilenceCuts(silencesJSON, numVideoTracksStr) {
             cutsMade++;
         }
 
-        return JSON.stringify({ success: true, cuts: cutsMade });
+        var resultName = useCopy ? seq.name : "";
+        return JSON.stringify({ success: true, cuts: cutsMade, sequenceName: resultName, isCopy: useCopy });
+
     } catch (e) {
-        return JSON.stringify({ error: "Erreur application coupes : " + e.message });
-    }
-}
-
-// Crée des marqueurs visuels pour la prévisualisation des silences
-function createPreviewMarkers(silencesJSON) {
-    var err = checkSequence();
-    if (err) return err;
-
-    try {
-        var silences = JSON.parse(silencesJSON);
-        var seq = app.project.activeSequence;
-
-        // Supprime les anciens marqueurs AutoCut
-        for (var i = seq.markers.numMarkers - 1; i >= 0; i--) {
-            var m = seq.markers[i];
-            if (m.name === "AutoCut Silence") {
-                seq.markers.deleteMarker(m);
-            }
-        }
-
-        // Crée les nouveaux marqueurs
-        for (var i = 0; i < silences.length; i++) {
-            var silence = silences[i];
-            var t = new Time();
-            t.seconds = silence.start;
-            var marker = seq.markers.createMarker(t.ticks);
-            marker.name = "AutoCut Silence";
-            marker.type = 0; // Comment
-            try {
-                var endT = new Time();
-                endT.seconds = silence.end;
-                marker.end = endT;
-            } catch(e2) {}
-        }
-
-        return JSON.stringify({ success: true, count: silences.length });
-    } catch (e) {
-        return JSON.stringify({ error: "Erreur marqueurs : " + e.message });
-    }
-}
-
-// Supprime tous les marqueurs AutoCut
-function clearPreviewMarkers() {
-    var err = checkSequence();
-    if (err) return err;
-    try {
-        var seq = app.project.activeSequence;
-        for (var i = seq.markers.numMarkers - 1; i >= 0; i--) {
-            var m = seq.markers[i];
-            if (m.name === "AutoCut Silence") {
-                seq.markers.deleteMarker(m);
-            }
-        }
-        return JSON.stringify({ success: true });
-    } catch (e) {
-        return JSON.stringify({ error: e.message });
+        return JSON.stringify({ error: "Erreur lors des coupes : " + e.message });
     }
 }

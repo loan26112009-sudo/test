@@ -9,151 +9,84 @@
 <body>
 <div id="app">
 
-  <!-- ── Header ─────────────────────────────────────────────── -->
   <header id="header">
     <div class="logo-icon">✂</div>
-    <div class="logo-text">
-      <span class="brand">AutoCut Silence</span>
-      <span class="version">v1.0 · Premiere Pro</span>
-    </div>
-    <span class="header-badge">CEP</span>
+    <div class="logo-text"><span class="brand">AutoCut Silence</span></div>
   </header>
 
-  <!-- ── Contenu principal ──────────────────────────────────── -->
   <div id="content">
 
     <!-- Statut -->
     <div id="status-bar">
       <div id="status-dot" class="status-dot"></div>
-      <span id="status-text">Initialisation...</span>
+      <span id="status-text">Prêt !</span>
     </div>
     <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 
-    <!-- ── Seuil de silence ─────────────────────────────────── -->
-    <div class="card">
-      <div class="card-title">Détection du silence</div>
-
-      <!-- Threshold -->
-      <div class="param-row">
-        <div class="param-label">
-          Seuil sonore
-          <small>Plus bas = détecte plus de sons</small>
-        </div>
-        <div class="param-control">
-          <input type="range" id="threshold-slider"
-                 min="-80" max="-5" step="1" value="-35">
-          <input type="number" id="threshold-input"
-                 min="-80" max="-5" step="1" value="-35">
-          <span class="unit">dB</span>
-        </div>
-      </div>
-
-      <!-- Min silence duration -->
-      <div class="param-row">
-        <div class="param-label">
-          Durée min. silence
-          <small>Ignorer les silences courts</small>
-        </div>
-        <div class="param-control">
-          <input type="range" id="min-silence-slider"
-                 min="50" max="3000" step="50" value="300">
-          <input type="number" id="min-silence-input"
-                 min="50" max="3000" step="50" value="300">
-          <span class="unit">ms</span>
-        </div>
-      </div>
+    <!-- Preset -->
+    <div class="section-label">Comment couper ?</div>
+    <div class="preset-grid">
+      <button class="preset-btn" data-preset="soft">
+        <span class="preset-icon">🌿</span>
+        <span class="preset-name">Doux</span>
+        <span class="preset-desc">Garde les petites pauses naturelles</span>
+      </button>
+      <button class="preset-btn active" data-preset="balanced">
+        <span class="preset-icon">⚡</span>
+        <span class="preset-name">Équilibré</span>
+        <span class="preset-desc">Le meilleur réglage pour la plupart des vidéos</span>
+      </button>
+      <button class="preset-btn" data-preset="hard">
+        <span class="preset-icon">🔥</span>
+        <span class="preset-name">Agressif</span>
+        <span class="preset-desc">Coupe tout, même les micro-silences</span>
+      </button>
     </div>
 
-    <!-- ── Marges de coupe ──────────────────────────────────── -->
-    <div class="card">
-      <div class="card-title">Marges (padding)</div>
-
-      <div class="param-row">
-        <div class="param-label">
-          Avant la coupe
-          <small>Garde un peu avant le son</small>
-        </div>
-        <div class="param-control">
-          <input type="number" id="padding-before"
-                 min="0" max="500" step="10" value="50">
-          <span class="unit">ms</span>
-        </div>
-      </div>
-
-      <div class="param-row">
-        <div class="param-label">
-          Après la coupe
-          <small>Garde un peu après le son</small>
-        </div>
-        <div class="param-control">
-          <input type="number" id="padding-after"
-                 min="0" max="500" step="10" value="50">
-          <span class="unit">ms</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Options pistes ──────────────────────────────────── -->
-    <div class="card">
-      <div class="card-title">Pistes à couper</div>
-
-      <div class="param-row" style="margin-bottom: 10px;">
-        <div class="param-label">
-          Pistes vidéo
-          <small>Nb de pistes vidéo (depuis le haut)</small>
-        </div>
-        <div class="track-selector">
-          <button class="track-btn" data-value="1">V1</button>
-          <button class="track-btn active" data-value="2">V1 + V2</button>
-          <button class="track-btn" data-value="3">V1–V3</button>
-          <button class="track-btn" data-value="99">Toutes</button>
-        </div>
-      </div>
-
-      <div class="toggle-row">
-        <div class="toggle-label">
-          Marqueurs de prévisualisation
-          <small>Ajoute des marqueurs dans la timeline</small>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="add-markers" checked>
-          <span class="toggle-track"></span>
-        </label>
-      </div>
-    </div>
-
-    <!-- ── Aperçu waveform ─────────────────────────────────── -->
-    <div class="card">
-      <div class="card-title">Aperçu waveform</div>
-      <div id="waveform-container">
-        <canvas id="waveform-canvas"></canvas>
-        <div id="waveform-placeholder">
-          <span class="icon">🎵</span>
-          <span>Cliquez « Générer Aperçu » pour voir la forme d'onde</span>
-        </div>
-      </div>
-
-      <!-- Stats silences -->
-      <div id="silence-stats" style="margin-top: 10px;"></div>
-    </div>
-
-  </div><!-- /content -->
-
-  <!-- ── Footer boutons ─────────────────────────────────────── -->
-  <footer id="footer">
+    <!-- Waveform + Aperçu -->
     <button id="btn-preview" class="btn btn-preview">
-      <span class="btn-icon">▶</span>
-      Générer Aperçu
+      ▶ &nbsp;Générer l'Aperçu
     </button>
+
+    <div id="waveform-container">
+      <canvas id="waveform-canvas"></canvas>
+      <div id="waveform-placeholder">
+        <span class="wph-icon">🎵</span>
+        <span>L'aperçu audio apparaîtra ici</span>
+      </div>
+    </div>
+
+    <div id="silence-stats"></div>
+
+    <!-- Pistes (s'affichent dynamiquement après analyse) -->
+    <div id="tracks-section" style="display:none">
+      <div class="section-label">Pistes à couper</div>
+      <div id="track-pills"></div>
+    </div>
+
+    <!-- Sécurité -->
+    <div id="safety-row">
+      <div class="safety-icon">🛡️</div>
+      <div class="safety-text">
+        <strong>Travailler sur une copie</strong>
+        <span>Ton montage original reste intact</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="use-copy" checked>
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+
+  </div>
+
+  <footer id="footer">
     <button id="btn-apply" class="btn btn-apply" disabled>
-      <span class="btn-icon">✂</span>
-      Appliquer à la Séquence
+      ✂ &nbsp;Couper les Silences
     </button>
   </footer>
 
-</div><!-- /app -->
+</div>
 
-<!-- Toast notification -->
 <div id="toast"></div>
 
 <script src="js/CSInterface.js"></script>

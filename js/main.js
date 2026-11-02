@@ -1,593 +1,445 @@
 /**
- * AutoCut Silence - Logique principale du panel
+ * AutoCut Silence — Interface simplifiée
+ * Sécurité : travaille toujours sur une copie par défaut.
  */
-
 (function () {
     "use strict";
 
-    // ─── État global ────────────────────────────────────────────────────────
     var cs = new CSInterface();
-    var audioBuffer = null;
-    var silenceSegments = [];
-    var sequenceInfo = null;
-    var clipsList = [];
-    var isAnalyzing = false;
-    var isApplying = false;
+    var audioBuffer      = null;
+    var silenceSegments  = [];
+    var clipsList        = [];
+    var tracksInfo       = [];     // pistes détectées dans la séquence
+    var selectedTracks   = [];     // pistes cochées par l'utilisateur
 
-    // ─── Paramètres ─────────────────────────────────────────────────────────
-    var params = {
-        thresholdDb: -35,       // Seuil de détection (dB)
-        minSilenceMs: 300,      // Durée min silence (ms)
-        paddingBeforeMs: 50,    // Padding avant la coupe (ms)
-        paddingAfterMs: 50,     // Padding après la coupe (ms)
-        numVideoTracks: 2,      // Nb pistes vidéo à couper
-        addMarkers: true        // Ajouter des marqueurs de preview
+    // ── Presets (invisibles pour l'utilisateur) ────────────────────────────
+    var PRESETS = {
+        soft:     { thresholdDb: -45, minSilenceMs: 600, paddingMs: 120 },
+        balanced: { thresholdDb: -35, minSilenceMs: 300, paddingMs:  60 },
+        hard:     { thresholdDb: -25, minSilenceMs: 150, paddingMs:  20 }
     };
+    var currentPreset = "balanced";
 
-    // ─── Refs DOM ────────────────────────────────────────────────────────────
-    var els = {
-        thresholdSlider:   document.getElementById("threshold-slider"),
-        thresholdInput:    document.getElementById("threshold-input"),
-        minSilenceSlider:  document.getElementById("min-silence-slider"),
-        minSilenceInput:   document.getElementById("min-silence-input"),
-        paddingBefore:     document.getElementById("padding-before"),
-        paddingAfter:      document.getElementById("padding-after"),
-        trackBtns:         document.querySelectorAll(".track-btn"),
-        addMarkers:        document.getElementById("add-markers"),
-        statusDot:         document.getElementById("status-dot"),
-        statusText:        document.getElementById("status-text"),
-        waveformCanvas:    document.getElementById("waveform-canvas"),
-        waveformPlaceholder: document.getElementById("waveform-placeholder"),
-        silenceStats:      document.getElementById("silence-stats"),
-        progressWrap:      document.getElementById("progress-bar-wrap"),
-        progressBar:       document.getElementById("progress-bar"),
-        btnPreview:        document.getElementById("btn-preview"),
-        btnApply:          document.getElementById("btn-apply"),
-        toast:             document.getElementById("toast")
-    };
+    // ── DOM ────────────────────────────────────────────────────────────────
+    var sdot         = document.getElementById("status-dot");
+    var stxt         = document.getElementById("status-text");
+    var pwrap        = document.getElementById("progress-bar-wrap");
+    var pbar         = document.getElementById("progress-bar");
+    var canvas       = document.getElementById("waveform-canvas");
+    var wph          = document.getElementById("waveform-placeholder");
+    var statsEl      = document.getElementById("silence-stats");
+    var tracksSect   = document.getElementById("tracks-section");
+    var trackPills   = document.getElementById("track-pills");
+    var useCopyChk   = document.getElementById("use-copy");
+    var btnPreview   = document.getElementById("btn-preview");
+    var btnApply     = document.getElementById("btn-apply");
+    var toastEl      = document.getElementById("toast");
 
-    // ─── Utilitaires ────────────────────────────────────────────────────────
-
-    function setStatus(text, type) {
-        // type: "", "ok", "error", "working"
-        els.statusText.textContent = text;
-        els.statusDot.className = "status-dot " + (type || "");
+    // ── Helpers UI ─────────────────────────────────────────────────────────
+    function setStatus(txt, type) {
+        stxt.textContent = txt;
+        sdot.className = "status-dot " + (type || "");
     }
-
-    function showToast(msg, type, duration) {
-        els.toast.textContent = msg;
-        els.toast.className = "show " + (type || "");
-        clearTimeout(els.toast._tid);
-        els.toast._tid = setTimeout(function () {
-            els.toast.className = "";
-        }, duration || 3000);
-    }
-
     function setProgress(pct) {
-        if (pct <= 0) {
-            els.progressWrap.style.display = "none";
-            els.progressBar.style.width = "0%";
-        } else {
-            els.progressWrap.style.display = "block";
-            els.progressBar.style.width = Math.min(100, pct) + "%";
-        }
+        pwrap.style.display = pct > 0 ? "block" : "none";
+        pbar.style.width = Math.min(100, pct) + "%";
     }
-
-    function formatSeconds(s) {
-        var m = Math.floor(s / 60);
-        var sec = (s % 60).toFixed(1);
-        return m > 0 ? m + "m " + sec + "s" : sec + "s";
+    function showToast(msg, type) {
+        toastEl.textContent = msg;
+        toastEl.className = "show " + (type || "");
+        clearTimeout(toastEl._t);
+        toastEl._t = setTimeout(function () { toastEl.className = ""; }, 3200);
     }
+    function fmt(s) { return s < 60 ? s.toFixed(1) + "s" : Math.floor(s/60) + "m" + (s%60).toFixed(0) + "s"; }
 
-    function setButtonsDisabled(disabled) {
-        els.btnPreview.disabled = disabled;
-        els.btnApply.disabled = disabled || silenceSegments.length === 0;
-    }
-
-    // ─── Liaison des paramètres ──────────────────────────────────────────────
-
-    function bindSliderInput(slider, input, key, min, max) {
-        slider.addEventListener("input", function () {
-            var v = parseFloat(slider.value);
-            params[key] = v;
-            input.value = v;
-            onParamChange();
+    // ── Preset selector ────────────────────────────────────────────────────
+    document.querySelectorAll(".preset-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            document.querySelectorAll(".preset-btn").forEach(function (b) { b.classList.remove("active"); });
+            btn.classList.add("active");
+            currentPreset = btn.dataset.preset;
+            if (audioBuffer) reanalyze();
         });
-        input.addEventListener("change", function () {
-            var v = Math.min(max, Math.max(min, parseFloat(input.value) || min));
-            params[key] = v;
-            slider.value = v;
-            input.value = v;
-            onParamChange();
-        });
-    }
+    });
 
-    function bindInput(input, key, min, max) {
-        input.addEventListener("change", function () {
-            var v = Math.min(max, Math.max(min, parseFloat(input.value) || min));
-            params[key] = v;
-            input.value = v;
-            onParamChange();
-        });
-    }
+    // ── Track pills (dynamiques après analyse) ─────────────────────────────
+    function buildTrackPills(tracks) {
+        trackPills.innerHTML = "";
+        selectedTracks = tracks.slice(); // toutes sélectionnées par défaut
 
-    function onParamChange() {
-        // Si on a déjà un audioBuffer, re-analyser et re-dessiner en direct
-        if (audioBuffer) {
-            runAnalysis(false);
-        }
-    }
+        tracks.forEach(function (t, i) {
+            var pill = document.createElement("button");
+            pill.className = "track-pill";
+            pill.innerHTML = '<span class="pill-check">✓</span> ' +
+                (t.type === "video" ? "🎬" : "🎵") + " " + t.name;
+            pill.dataset.idx = i;
 
-    function initControls() {
-        bindSliderInput(els.thresholdSlider, els.thresholdInput, "thresholdDb", -80, 0);
-        bindSliderInput(els.minSilenceSlider, els.minSilenceInput, "minSilenceMs", 50, 3000);
-        bindInput(els.paddingBefore, "paddingBeforeMs", 0, 500);
-        bindInput(els.paddingAfter, "paddingAfterMs", 0, 500);
+            pill.addEventListener("click", function () {
+                var idx = parseInt(pill.dataset.idx, 10);
+                var pos = selectedTracks.indexOf(tracks[idx]);
 
-        // Track selector — valeur par défaut = 2
-        params.numVideoTracks = 2;
-        els.trackBtns.forEach(function (btn) {
-            if (parseInt(btn.dataset.value, 10) === 2) btn.classList.add("active");
-            else btn.classList.remove("active");
-
-            btn.addEventListener("click", function () {
-                els.trackBtns.forEach(function (b) { b.classList.remove("active"); });
-                btn.classList.add("active");
-                params.numVideoTracks = parseInt(btn.dataset.value, 10) || 99;
+                if (pos !== -1) {
+                    // Déselectionner seulement si au moins 1 autre reste sélectionné
+                    if (selectedTracks.length > 1) {
+                        selectedTracks.splice(pos, 1);
+                        pill.classList.add("off");
+                        pill.querySelector(".pill-check").textContent = "○";
+                    }
+                } else {
+                    selectedTracks.push(tracks[idx]);
+                    pill.classList.remove("off");
+                    pill.querySelector(".pill-check").textContent = "✓";
+                }
             });
+
+            trackPills.appendChild(pill);
         });
 
-        // Toggle marqueurs
-        els.addMarkers.addEventListener("change", function () {
-            params.addMarkers = els.addMarkers.checked;
-        });
-
-        // Initialise les valeurs par défaut dans l'UI
-        els.thresholdSlider.value = params.thresholdDb;
-        els.thresholdInput.value = params.thresholdDb;
-        els.minSilenceSlider.value = params.minSilenceMs;
-        els.minSilenceInput.value = params.minSilenceMs;
-        els.paddingBefore.value = params.paddingBeforeMs;
-        els.paddingAfter.value = params.paddingAfterMs;
+        tracksSect.style.display = "block";
     }
 
-    // ─── Communication avec Premiere Pro ─────────────────────────────────────
-
+    // ── Communication Premiere Pro ─────────────────────────────────────────
     function evalScript(script) {
         return new Promise(function (resolve) {
-            cs.evalScript(script, function (result) {
-                resolve(result);
-            });
+            cs.evalScript(script, function (r) { resolve(r || '{}'); });
         });
     }
 
-    function loadSequenceInfo() {
-        return evalScript("getSequenceInfo()").then(function (raw) {
-            try {
-                var data = JSON.parse(raw);
-                if (data.error) {
-                    setStatus(data.error, "error");
-                    return null;
-                }
-                sequenceInfo = data;
-                return data;
-            } catch (e) {
-                setStatus("Erreur communication Premiere Pro", "error");
-                return null;
-            }
-        });
-    }
-
-    function loadClipsInfo() {
+    function loadClips() {
         return evalScript("getClipsInfo()").then(function (raw) {
             try {
-                var data = JSON.parse(raw);
-                if (data.error) {
-                    setStatus(data.error, "error");
-                    return null;
-                }
-                clipsList = data.audioClips || [];
+                var d = JSON.parse(raw);
+                if (d.error) { setStatus(d.error, "error"); return null; }
+                clipsList = d.audioClips || [];
                 return clipsList;
-            } catch (e) {
-                return null;
-            }
+            } catch (e) { return null; }
         });
     }
 
-    // ─── Lecture audio (Node.js + Web Audio API) ─────────────────────────────
+    function loadTracksInfo() {
+        return evalScript("getSequenceTracksInfo()").then(function (raw) {
+            try {
+                var d = JSON.parse(raw);
+                if (d.error || !d.tracks) return [];
+                return d.tracks;
+            } catch (e) { return []; }
+        });
+    }
 
-    function readFileBuffer(filePath) {
+    // ── Lecture fichier audio (Node.js ou fetch file://) ───────────────────
+    function readFileBuffer(path) {
         return new Promise(function (resolve, reject) {
-            // Essaie d'utiliser le module fs de Node.js (disponible dans CEP)
             var fs = null;
-            try { fs = require("fs"); } catch (e1) {
-                try { fs = window.require("fs"); } catch (e2) { fs = null; }
+            try { fs = require("fs"); } catch (e) {
+                try { fs = window.require("fs"); } catch (e2) {}
             }
-
             if (fs) {
                 try {
-                    var buf = fs.readFileSync(filePath);
-                    // Convertit Buffer Node en ArrayBuffer
-                    var ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-                    resolve(ab);
-                } catch (e) {
-                    reject(new Error("Impossible de lire le fichier : " + e.message));
-                }
+                    var buf = fs.readFileSync(path);
+                    resolve(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+                } catch (e) { reject(new Error("Lecture impossible : " + e.message)); }
             } else {
-                // Fallback : fetch avec file://
-                var uri = "file:///" + filePath.replace(/\\/g, "/").replace(/^\//, "");
-                fetch(uri)
+                fetch("file:///" + path.replace(/\\/g, "/").replace(/^\//, ""))
                     .then(function (r) { return r.arrayBuffer(); })
                     .then(resolve)
-                    .catch(function () { reject(new Error("Impossible d'accéder au fichier source.")); });
+                    .catch(function () { reject(new Error("Fichier source inaccessible.")); });
             }
         });
     }
 
-    function decodeAudio(arrayBuffer) {
+    function decodeAudio(ab) {
         return new Promise(function (resolve, reject) {
             var ctx = new (window.AudioContext || window.webkitAudioContext)();
-            ctx.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+            ctx.decodeAudioData(ab.slice(0), resolve, reject);
         });
     }
 
-    // ─── Analyse des silences ────────────────────────────────────────────────
+    // ── Détection silences ─────────────────────────────────────────────────
+    function detectSilences(buf, presetKey, clip) {
+        var p       = PRESETS[presetKey];
+        var sr      = buf.sampleRate;
+        var thrLin  = Math.pow(10, p.thresholdDb / 20);
+        var minSmp  = Math.floor(p.minSilenceMs  / 1000 * sr);
+        var padSmp  = Math.floor(p.paddingMs     / 1000 * sr);
+        var win     = Math.floor(sr * 0.01); // fenêtres de 10ms
+        var numCh   = buf.numberOfChannels;
+        var chs     = [];
+        for (var c = 0; c < numCh; c++) chs.push(buf.getChannelData(c));
 
-    function detectSilences(buffer, thresholdDb, minSilenceMs, paddingBeforeMs, paddingAfterMs, srcStart, seqStart) {
-        var sampleRate   = buffer.sampleRate;
-        var thresholdLin = Math.pow(10, thresholdDb / 20);
-        var minSamples   = Math.floor(minSilenceMs / 1000 * sampleRate);
-        var padBeforeSmp = Math.floor(paddingBeforeMs / 1000 * sampleRate);
-        var padAfterSmp  = Math.floor(paddingAfterMs / 1000 * sampleRate);
+        var silStart = -1, result = [], n = buf.length;
 
-        // Fusionne les canaux (RMS sur tous les canaux)
-        var numCh    = buffer.numberOfChannels;
-        var numSmpl  = buffer.length;
-        var channels = [];
-        for (var c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
-
-        // Analyse par fenêtres de 10ms
-        var windowSamples = Math.max(1, Math.floor(sampleRate * 0.01));
-        var silences = [];
-        var silStart = -1;
-
-        for (var i = 0; i < numSmpl; i += windowSamples) {
-            var end = Math.min(i + windowSamples, numSmpl);
-            var sumSq = 0;
+        for (var i = 0; i < n; i += win) {
+            var end = Math.min(i + win, n);
+            var sq  = 0;
             for (var j = i; j < end; j++) {
-                var sample = 0;
-                for (var ch = 0; ch < numCh; ch++) sample += channels[ch][j];
-                sample /= numCh;
-                sumSq += sample * sample;
+                var s = 0;
+                for (var ch = 0; ch < numCh; ch++) s += chs[ch][j];
+                s /= numCh; sq += s * s;
             }
-            var rms = Math.sqrt(sumSq / (end - i));
+            var rms = Math.sqrt(sq / (end - i));
 
-            if (rms < thresholdLin) {
-                if (silStart === -1) silStart = i;
+            if (rms < thrLin) {
+                if (silStart < 0) silStart = i;
             } else {
-                if (silStart !== -1) {
-                    var silLen = i - silStart;
-                    if (silLen >= minSamples) {
-                        var s = Math.max(0, silStart + padBeforeSmp);
-                        var e = Math.max(s + windowSamples, i - padAfterSmp);
-                        silences.push({ srcStart: s, srcEnd: e });
+                if (silStart >= 0) {
+                    if (i - silStart >= minSmp) {
+                        var ss = Math.max(0, silStart + padSmp);
+                        var se = Math.max(ss + win, i - padSmp);
+                        var offset = (clip.seqStart || 0) - (clip.srcStart || 0);
+                        result.push({
+                            _s: ss, _e: se,
+                            start: ss / sr + (clip.srcStart || 0) + offset,
+                            end:   se / sr + (clip.srcStart || 0) + offset
+                        });
                     }
                     silStart = -1;
                 }
             }
         }
-        // Vérifie fin de fichier
-        if (silStart !== -1) {
-            var silLen = numSmpl - silStart;
-            if (silLen >= minSamples) {
-                var s = Math.max(0, silStart + padBeforeSmp);
-                var e = Math.max(s + windowSamples, numSmpl - padAfterSmp);
-                silences.push({ srcStart: s, srcEnd: e });
-            }
+        // Dernier segment
+        if (silStart >= 0 && n - silStart >= minSmp) {
+            var ss = Math.max(0, silStart + padSmp);
+            var se = Math.max(ss + win, n - padSmp);
+            var offset = (clip.seqStart || 0) - (clip.srcStart || 0);
+            result.push({ _s: ss, _e: se,
+                start: ss / sr + (clip.srcStart || 0) + offset,
+                end:   se / sr + (clip.srcStart || 0) + offset
+            });
         }
-
-        // Convertit les positions samples en secondes dans la SÉQUENCE
-        var offset = seqStart - srcStart; // décalage clip_src -> timeline
-        return silences.map(function (sil) {
-            return {
-                start: sil.srcStart / sampleRate + srcStart + offset,
-                end:   sil.srcEnd   / sampleRate + srcStart + offset,
-                // Garde aussi les positions en samples pour le rendu du waveform
-                _s: sil.srcStart,
-                _e: sil.srcEnd
-            };
-        });
+        return result;
     }
 
-    // ─── Waveform ────────────────────────────────────────────────────────────
-
-    function drawWaveform(buffer, silences) {
-        var canvas = els.waveformCanvas;
-        var ctx    = canvas.getContext("2d");
-        var W      = canvas.offsetWidth;
-        var H      = canvas.offsetHeight;
-        canvas.width  = W;
-        canvas.height = H;
-
-        ctx.clearRect(0, 0, W, H);
-
-        // Fond
+    // ── Waveform canvas ────────────────────────────────────────────────────
+    function drawWaveform(buf, sils) {
+        var ctx = canvas.getContext("2d");
+        var W = canvas.offsetWidth, H = canvas.offsetHeight;
+        canvas.width = W; canvas.height = H;
         ctx.fillStyle = "#1e1e32";
         ctx.fillRect(0, 0, W, H);
+        if (!buf) return;
 
-        if (!buffer) return;
+        var data = buf.getChannelData(0), n = data.length;
+        var mid = H / 2, block = Math.max(1, Math.floor(n / W));
 
-        var data      = buffer.getChannelData(0);
-        var numSmpl   = buffer.length;
-        var mid       = H / 2;
-        var blockSize = Math.max(1, Math.floor(numSmpl / W));
-
-        // Marque les zones de silence en arrière-plan
-        ctx.fillStyle = "rgba(239,68,68,0.18)";
-        silences.forEach(function (sil) {
-            var xStart = Math.floor((sil._s / numSmpl) * W);
-            var xEnd   = Math.ceil((sil._e  / numSmpl) * W);
-            ctx.fillRect(xStart, 0, Math.max(1, xEnd - xStart), H);
+        // Zones silence (fond rouge)
+        ctx.fillStyle = "rgba(239,68,68,.2)";
+        sils.forEach(function (s) {
+            var x0 = Math.floor(s._s / n * W);
+            var x1 = Math.ceil(s._e  / n * W);
+            ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H);
         });
-
-        // Ligne centrale
-        ctx.strokeStyle = "rgba(255,255,255,0.06)";
-        ctx.lineWidth   = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, mid);
-        ctx.lineTo(W, mid);
-        ctx.stroke();
 
         // Waveform
-        ctx.beginPath();
-        ctx.strokeStyle = "#7c3aed";
-        ctx.lineWidth   = 1;
-
+        ctx.beginPath(); ctx.strokeStyle = "#8b5cf6"; ctx.lineWidth = 1;
         for (var x = 0; x < W; x++) {
-            var from = x * blockSize;
-            var to   = Math.min(from + blockSize, numSmpl);
-            var min  = 0, max = 0;
-            for (var j = from; j < to; j++) {
-                if (data[j] < min) min = data[j];
-                if (data[j] > max) max = data[j];
+            var f = x * block, t = Math.min(f + block, n);
+            var mn = 0, mx = 0;
+            for (var j = f; j < t; j++) {
+                if (data[j] < mn) mn = data[j];
+                if (data[j] > mx) mx = data[j];
             }
-            ctx.moveTo(x + 0.5, mid + min * mid * 0.9);
-            ctx.lineTo(x + 0.5, mid + max * mid * 0.9);
+            ctx.moveTo(x + .5, mid + mn * mid * .9);
+            ctx.lineTo(x + .5, mid + mx * mid * .9);
         }
         ctx.stroke();
 
-        // Bordures des silences
-        ctx.strokeStyle = "#ef4444";
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([3, 3]);
-        silences.forEach(function (sil) {
-            var xStart = Math.floor((sil._s / numSmpl) * W);
-            var xEnd   = Math.ceil((sil._e  / numSmpl) * W);
-            ctx.beginPath();
-            ctx.moveTo(xStart + 0.5, 0);
-            ctx.lineTo(xStart + 0.5, H);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(xEnd - 0.5, 0);
-            ctx.lineTo(xEnd - 0.5, H);
-            ctx.stroke();
+        // Bordures silences
+        ctx.strokeStyle = "#ef4444"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+        sils.forEach(function (s) {
+            var x0 = Math.floor(s._s / n * W);
+            var x1 = Math.ceil(s._e  / n * W);
+            ctx.beginPath(); ctx.moveTo(x0+.5, 0); ctx.lineTo(x0+.5, H); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x1-.5, 0); ctx.lineTo(x1-.5, H); ctx.stroke();
         });
         ctx.setLineDash([]);
-
-        els.waveformPlaceholder.style.display = "none";
+        wph.style.display = "none";
     }
 
-    // ─── Stats silences ───────────────────────────────────────────────────────
-
-    function updateStats(silences, totalDuration) {
-        var container = els.silenceStats;
-        container.innerHTML = "";
-
-        var totalSilence = silences.reduce(function (sum, s) { return sum + (s.end - s.start); }, 0);
-        var pct = totalDuration > 0 ? Math.round((totalSilence / totalDuration) * 100) : 0;
-
-        var chips = [
-            { label: silences.length + " silence" + (silences.length > 1 ? "s" : ""), cls: silences.length > 0 ? "red" : "" },
-            { label: formatSeconds(totalSilence) + " à couper", cls: totalSilence > 0 ? "red" : "" },
-            { label: pct + "% du clip", cls: pct > 0 ? "highlight" : "" }
-        ];
-
-        chips.forEach(function (c) {
-            var chip = document.createElement("span");
-            chip.className = "stat-chip " + (c.cls || "");
-            chip.textContent = c.label;
-            container.appendChild(chip);
+    // ── Stats ──────────────────────────────────────────────────────────────
+    function updateStats(sils, dur) {
+        statsEl.innerHTML = "";
+        var total = sils.reduce(function (a, s) { return a + (s.end - s.start); }, 0);
+        var pct = dur > 0 ? Math.round(total / dur * 100) : 0;
+        [
+            { t: sils.length + " silence" + (sils.length !== 1 ? "s" : ""), cls: sils.length > 0 ? "red" : "" },
+            { t: fmt(total) + " à supprimer", cls: total > 0 ? "red" : "" },
+            { t: pct + "% du clip",           cls: pct > 0 ? "acc" : "" }
+        ].forEach(function (d) {
+            var el = document.createElement("span");
+            el.className = "stat-chip " + d.cls;
+            el.textContent = d.t;
+            statsEl.appendChild(el);
         });
     }
 
-    // ─── Flux principal ───────────────────────────────────────────────────────
-
-    function runAnalysis(withFileLoad) {
-        withFileLoad = (withFileLoad !== false);
-
-        if (withFileLoad) {
-            // Charge depuis Premiere Pro
-            setStatus("Connexion à Premiere Pro...", "working");
-            setProgress(5);
-            setButtonsDisabled(true);
-            silenceSegments = [];
-            audioBuffer     = null;
-            els.waveformPlaceholder.style.display = "flex";
-
-            loadSequenceInfo()
-                .then(function (seq) {
-                    if (!seq) { setProgress(0); setButtonsDisabled(false); return; }
-                    setStatus("Récupération des clips...", "working");
-                    setProgress(15);
-                    return loadClipsInfo();
-                })
-                .then(function (clips) {
-                    if (!clips || clips.length === 0) {
-                        setStatus("Aucun clip audio trouvé dans la séquence.", "error");
-                        setProgress(0);
-                        setButtonsDisabled(false);
-                        return;
-                    }
-
-                    var clip = clips[0];
-                    if (!clip.filePath) {
-                        setStatus("Chemin du fichier source introuvable.", "error");
-                        setProgress(0);
-                        setButtonsDisabled(false);
-                        return;
-                    }
-
-                    setStatus("Lecture du fichier audio...", "working");
-                    setProgress(30);
-
-                    readFileBuffer(clip.filePath).then(function (ab) {
-                        setStatus("Décodage audio...", "working");
-                        setProgress(55);
-
-                        decodeAudio(ab).then(function (buf) {
-                            audioBuffer = buf;
-                            setProgress(70);
-                            runAnalysis(false); // analyse sans re-charger le fichier
-                        }).catch(function (e) {
-                            setStatus("Impossible de décoder l'audio : " + (e.message || e), "error");
-                            showToast("Format audio non supporté. Essayez un MP4/WAV.", "error");
-                            setProgress(0);
-                            setButtonsDisabled(false);
-                        });
-                    }).catch(function (e) {
-                        setStatus(e.message, "error");
-                        setProgress(0);
-                        setButtonsDisabled(false);
-                    });
-                });
-        } else {
-            // Re-analyse avec les paramètres actuels (audioBuffer déjà chargé)
-            if (!audioBuffer) return;
-
-            setStatus("Analyse des silences...", "working");
-            setProgress(80);
-
-            var clip = clipsList[0] || { srcStart: 0, seqStart: 0 };
-
-            // Lance en setTimeout pour ne pas bloquer l'UI
-            setTimeout(function () {
-                silenceSegments = detectSilences(
-                    audioBuffer,
-                    params.thresholdDb,
-                    params.minSilenceMs,
-                    params.paddingBeforeMs,
-                    params.paddingAfterMs,
-                    clip.srcStart || 0,
-                    clip.seqStart || 0
-                );
-
-                drawWaveform(audioBuffer, silenceSegments);
-                updateStats(silenceSegments, audioBuffer.duration);
-
-                var msg = silenceSegments.length === 0
-                    ? "Aucun silence détecté — essayez d'ajuster le seuil."
-                    : silenceSegments.length + " silence(s) détecté(s). Prêt à appliquer.";
-
-                setStatus(msg, silenceSegments.length > 0 ? "ok" : "");
-                setProgress(0);
-                setButtonsDisabled(false);
-                els.btnApply.disabled = silenceSegments.length === 0;
-
-                if (params.addMarkers && silenceSegments.length > 0 && cs.isLoaded()) {
-                    var json = JSON.stringify(silenceSegments.map(function (s) {
-                        return { start: s.start, end: s.end };
-                    }));
-                    evalScript("createPreviewMarkers('" + json.replace(/'/g, "\\'") + "')");
-                }
-            }, 0);
-        }
+    // ── Re-analyse sans re-charger le fichier ──────────────────────────────
+    function reanalyze() {
+        if (!audioBuffer) return;
+        var clip = clipsList[0] || {};
+        setTimeout(function () {
+            silenceSegments = detectSilences(audioBuffer, currentPreset, clip);
+            drawWaveform(audioBuffer, silenceSegments);
+            updateStats(silenceSegments, audioBuffer.duration);
+            var n = silenceSegments.length;
+            setStatus(n > 0 ? n + " silence(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
+            btnApply.disabled = n === 0;
+        }, 0);
     }
 
-    function applyToSequence() {
-        if (silenceSegments.length === 0) {
-            showToast("Générez d'abord un aperçu.", "error");
-            return;
-        }
-        if (!cs.isLoaded()) {
-            showToast("Non connecté à Premiere Pro.", "error");
-            return;
-        }
+    // ── Générer Aperçu ────────────────────────────────────────────────────
+    btnPreview.addEventListener("click", function () {
+        btnPreview.disabled = true;
+        btnApply.disabled   = true;
+        audioBuffer         = null;
+        silenceSegments     = [];
+        tracksSect.style.display = "none";
+        wph.style.display   = "flex";
+        drawWaveform(null, []);
+        statsEl.innerHTML   = "";
 
-        isApplying = true;
-        setButtonsDisabled(true);
-        setStatus("Application des coupes en cours...", "working");
+        setStatus("Connexion à Premiere Pro...", "working");
         setProgress(10);
 
-        var seqSilences = silenceSegments.map(function (s) {
-            return { start: s.start, end: s.end };
+        evalScript("getSequenceInfo()").then(function (raw) {
+            var seq = null;
+            try { seq = JSON.parse(raw); } catch (e) {}
+            if (!seq || seq.error) {
+                setStatus(seq && seq.error ? seq.error : "Ouvrez une séquence dans Premiere Pro.", "error");
+                setProgress(0); btnPreview.disabled = false; return Promise.reject("no seq");
+            }
+            setProgress(20); setStatus("Lecture des pistes...", "working");
+            // Charge clips et infos pistes en parallèle
+            return Promise.all([loadClips(), loadTracksInfo()]);
+        }).then(function (results) {
+            if (!results) return;
+            var clips  = results[0];
+            var tracks = results[1];
+
+            if (!clips || clips.length === 0) {
+                setStatus("Aucun clip audio trouvé dans la séquence.", "error");
+                setProgress(0); btnPreview.disabled = false; return;
+            }
+
+            // Affiche les pistes détectées
+            tracksInfo = tracks && tracks.length > 0 ? tracks : [];
+            if (tracksInfo.length > 0) buildTrackPills(tracksInfo);
+
+            var clip = clips[0];
+            if (!clip.filePath) {
+                setStatus("Chemin source introuvable.", "error");
+                setProgress(0); btnPreview.disabled = false; return;
+            }
+
+            setProgress(40); setStatus("Lecture du fichier audio...", "working");
+
+            readFileBuffer(clip.filePath).then(function (ab) {
+                setProgress(65); setStatus("Analyse en cours...", "working");
+                decodeAudio(ab).then(function (buf) {
+                    audioBuffer = buf;
+                    setProgress(85);
+                    setTimeout(function () {
+                        silenceSegments = detectSilences(buf, currentPreset, clip);
+                        drawWaveform(buf, silenceSegments);
+                        updateStats(silenceSegments, buf.duration);
+                        setProgress(0);
+                        var n = silenceSegments.length;
+                        setStatus(n > 0 ? n + " silence(s) détecté(s) — Prêt !" : "Aucun silence — essaie Agressif", n > 0 ? "ok" : "");
+                        btnPreview.disabled = false;
+                        btnApply.disabled   = n === 0;
+                    }, 0);
+                }).catch(function () {
+                    setStatus("Format non supporté. Utilise un MP4 ou WAV.", "error");
+                    setProgress(0); btnPreview.disabled = false;
+                });
+            }).catch(function (e) {
+                setStatus(e.message, "error");
+                setProgress(0); btnPreview.disabled = false;
+            });
+        }).catch(function () {
+            setProgress(0); btnPreview.disabled = false;
         });
+    });
 
-        // Trie en ordre décroissant (requis pour le ripple delete)
-        seqSilences.sort(function (a, b) { return b.start - a.start; });
+    // ── Couper les silences ───────────────────────────────────────────────
+    btnApply.addEventListener("click", function () {
+        if (!silenceSegments.length) return;
 
-        var json = JSON.stringify(seqSilences);
-        // Échappe les apostrophes pour l'injection dans evalScript
-        json = json.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        // Construit la liste des pistes sélectionnées
+        var trackSelection = selectedTracks.length > 0
+            ? selectedTracks
+            : tracksInfo; // fallback : toutes si rien sélectionné
 
-        evalScript("applySilenceCuts('" + json + "', " + params.numVideoTracks + ")").then(function (raw) {
-            isApplying = false;
+        // Si aucune info piste (Pr non connecté), utilise toutes (index 0,1)
+        if (trackSelection.length === 0) {
+            trackSelection = [
+                { type: "video", index: 0 },
+                { type: "video", index: 1 },
+                { type: "audio", index: 0 }
+            ];
+        }
+
+        var useCopy = useCopyChk.checked;
+
+        btnPreview.disabled = true;
+        btnApply.disabled   = true;
+        setStatus(useCopy ? "Création d'une copie..." : "Application des coupes...", "working");
+        setProgress(15);
+
+        var seqSils = silenceSegments
+            .filter(function (s) { return s.end - s.start > 0.05; })
+            .sort(function (a, b) { return b.start - a.start; })
+            .map(function (s) { return { start: s.start, end: s.end }; });
+
+        var silJSON   = JSON.stringify(seqSils).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        var trackJSON = JSON.stringify(trackSelection).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+        evalScript(
+            "applySilenceCuts('" + silJSON + "', '" + trackJSON + "', '" + (useCopy ? "true" : "false") + "')"
+        ).then(function (raw) {
             setProgress(0);
             try {
-                var result = JSON.parse(raw);
-                if (result.error) {
-                    setStatus("Erreur : " + result.error, "error");
-                    showToast(result.error, "error");
+                var r = JSON.parse(raw);
+                if (r.error) {
+                    setStatus("Erreur : " + r.error, "error");
+                    showToast(r.error, "err");
+                    btnPreview.disabled = false;
                 } else {
-                    setStatus(result.cuts + " coupe(s) appliquée(s) avec succès !", "ok");
-                    showToast("✓ " + result.cuts + " silence(s) supprimé(s)", "success");
-                    // Réinitialise pour une nouvelle analyse
-                    silenceSegments = [];
-                    audioBuffer     = null;
-                    els.waveformPlaceholder.style.display = "flex";
+                    var msg = r.isCopy
+                        ? "✓ " + r.cuts + " coupe(s) dans « " + r.sequenceName + " »"
+                        : "✓ " + r.cuts + " silence(s) supprimé(s)";
+                    setStatus(msg, "ok");
+                    showToast(msg, "ok");
+                    // Reset pour une nouvelle analyse
+                    audioBuffer = null; silenceSegments = [];
+                    wph.style.display = "flex";
                     drawWaveform(null, []);
-                    els.silenceStats.innerHTML = "";
-                    els.btnApply.disabled = true;
+                    statsEl.innerHTML = "";
+                    tracksSect.style.display = "none";
+                    btnPreview.disabled = false;
+                    btnApply.disabled   = true;
                 }
             } catch (e) {
                 setStatus("Réponse inattendue.", "error");
+                btnPreview.disabled = false;
             }
-            setButtonsDisabled(false);
         });
+    });
+
+    // ── Init ──────────────────────────────────────────────────────────────
+    if (cs.isLoaded()) {
+        evalScript("getSequenceInfo()").then(function (raw) {
+            try {
+                var d = JSON.parse(raw);
+                if (d && !d.error) setStatus("Séquence « " + d.name + " » — Cliquez Générer l'Aperçu", "ok");
+                else setStatus("Ouvrez une séquence dans Premiere Pro", "");
+            } catch (e) { setStatus("Ouvrez une séquence dans Premiere Pro", ""); }
+        });
+    } else {
+        setStatus("Ouvrez ce panel dans Premiere Pro", "");
     }
 
-    // ─── Init ─────────────────────────────────────────────────────────────────
+    new ResizeObserver(function () {
+        if (audioBuffer) drawWaveform(audioBuffer, silenceSegments);
+    }).observe(canvas);
 
-    function init() {
-        initControls();
-
-        // Vérifie la connexion à Premiere Pro au démarrage
-        if (cs.isLoaded()) {
-            loadSequenceInfo().then(function (seq) {
-                if (seq) {
-                    setStatus("Séquence « " + seq.name + " » — Cliquez Générer Aperçu", "ok");
-                } else {
-                    setStatus("Ouvrez une séquence dans Premiere Pro", "");
-                }
-            });
-        } else {
-            setStatus("Ouvrez ce panel dans Premiere Pro", "");
-        }
-
-        els.btnPreview.addEventListener("click", function () {
-            if (!isAnalyzing) runAnalysis(true);
-        });
-
-        els.btnApply.addEventListener("click", function () {
-            if (!isApplying) applyToSequence();
-        });
-
-        // Resize du canvas waveform
-        var resizeObserver = new ResizeObserver(function () {
-            if (audioBuffer) drawWaveform(audioBuffer, silenceSegments);
-        });
-        resizeObserver.observe(els.waveformCanvas);
-    }
-
-    document.addEventListener("DOMContentLoaded", init);
-
-})();
+}());
