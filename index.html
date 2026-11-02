@@ -11,7 +11,12 @@
 
   <header id="header">
     <div class="logo-icon">✂</div>
-    <div class="logo-text"><span class="brand">AutoCut Silence</span></div>
+    <div class="logo-text">
+      <span class="brand">AutoCut Silence</span>
+      <span class="brand-sub">Premiere Pro</span>
+    </div>
+    <div class="header-spacer"></div>
+    <span class="header-version">v1.1</span>
   </header>
 
   <div id="content">
@@ -24,28 +29,28 @@
     <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 
     <!-- Preset -->
-    <div class="section-label">Comment couper ?</div>
+    <div class="section-label">Mode de coupe</div>
     <div class="preset-grid">
       <button class="preset-btn" data-preset="soft">
         <span class="preset-icon">🌿</span>
         <span class="preset-name">Doux</span>
-        <span class="preset-desc">Garde les petites pauses naturelles</span>
+        <span class="preset-desc">Pauses naturelles conservées</span>
       </button>
       <button class="preset-btn active" data-preset="balanced">
         <span class="preset-icon">⚡</span>
         <span class="preset-name">Équilibré</span>
-        <span class="preset-desc">Le meilleur réglage pour la plupart des vidéos</span>
+        <span class="preset-desc">Réglage optimal par défaut</span>
       </button>
       <button class="preset-btn" data-preset="hard">
         <span class="preset-icon">🔥</span>
         <span class="preset-name">Agressif</span>
-        <span class="preset-desc">Coupe tout, même les micro-silences</span>
+        <span class="preset-desc">Tous les silences coupés</span>
       </button>
     </div>
 
     <!-- Mode avancé -->
     <div id="advanced-toggle-row">
-      <button id="advanced-toggle" class="advanced-toggle-btn">⚙ Mode Avancé</button>
+      <button id="advanced-toggle" class="advanced-toggle-btn">⚙ Avancé</button>
     </div>
 
     <div id="advanced-panel" style="display:none">
@@ -58,7 +63,7 @@
         <span class="adv-hint">Plus haut = coupe plus de son</span>
       </div>
       <div class="adv-row">
-        <label class="adv-label">Durée min. silence</label>
+        <label class="adv-label">Durée min.</label>
         <div class="adv-ctrl">
           <input type="range" id="adv-min-silence" min="50" max="2000" step="25" value="300">
           <span class="adv-val" id="adv-min-silence-val">300 ms</span>
@@ -66,7 +71,7 @@
         <span class="adv-hint">Ignore les silences plus courts</span>
       </div>
       <div class="adv-row">
-        <label class="adv-label">Marge de sécurité</label>
+        <label class="adv-label">Marge</label>
         <div class="adv-ctrl">
           <input type="range" id="adv-padding" min="0" max="400" step="10" value="60">
           <span class="adv-val" id="adv-padding-val">60 ms</span>
@@ -75,22 +80,28 @@
       </div>
     </div>
 
-    <!-- Waveform + Aperçu -->
-    <button id="btn-preview" class="btn btn-preview">
-      ▶ &nbsp;Générer l'Aperçu
-    </button>
-
+    <!-- Waveform -->
     <div id="waveform-container">
       <canvas id="waveform-canvas"></canvas>
       <div id="waveform-placeholder">
         <span class="wph-icon">🎵</span>
-        <span>L'aperçu audio apparaîtra ici</span>
+        <span>Aperçu audio — cliquez Analyser</span>
       </div>
+    </div>
+    <canvas id="minimap-canvas" hidden></canvas>
+
+    <!-- Légende / hints -->
+    <div id="waveform-hint">
+      <div class="wh-item"><div class="wh-dot red"></div>À couper</div>
+      <div class="wh-item"><div class="wh-dot orange"></div>Exclu (clic)</div>
+      <span class="wh-sep">|</span>
+      <div class="wh-item">Molette: zoom</div>
+      <div class="wh-item">Glisser: déplacer</div>
     </div>
 
     <div id="silence-stats"></div>
 
-    <!-- Pistes (s'affichent dynamiquement après analyse) -->
+    <!-- Pistes (dynamiques après analyse) -->
     <div id="tracks-section" style="display:none">
       <div class="section-label">Pistes à couper</div>
       <div id="track-pills"></div>
@@ -112,9 +123,8 @@
   </div>
 
   <footer id="footer">
-    <button id="btn-apply" class="btn btn-apply" disabled>
-      ✂ &nbsp;Couper les Silences
-    </button>
+    <button id="btn-preview" class="btn btn-preview">▶ Analyser</button>
+    <button id="btn-apply" class="btn btn-apply" disabled>✂ Couper les Silences</button>
   </footer>
 
 </div>
